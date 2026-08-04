@@ -1,0 +1,14 @@
+**/target
+!trade-service/target/
+!trade-service/target/trade-service-*.jar
+!gateway-service/target/
+!gateway-service/target/gateway-service-*.jar
+!notification-service/target/
+!notification-service/target/notification-service-*.jar
+.git
+.idea
+.vscode
+*.iml
+*.log
+.env
+data

@@ -1,0 +1,352 @@
+openapi: 3.1.0
+info:
+  title: FlashFlow API
+  version: 1.0.0
+  description: 高并发限量购与订单履约平台的外部 API
+servers:
+  - url: http://localhost:8080
+    description: Local gateway
+tags:
+  - name: Auth
+  - name: Products
+  - name: Campaigns
+  - name: Orders
+  - name: AfterSales
+  - name: Reviews
+  - name: Admin
+paths:
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: JWT issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponseEnvelope"
+        "401":
+          $ref: "#/components/responses/Error"
+  /api/v1/products:
+    get:
+      tags: [Products]
+      operationId: listProducts
+      parameters:
+        - {name: keyword, in: query, schema: {type: string}}
+        - {name: categoryId, in: query, schema: {type: integer, format: int64}}
+      responses:
+        "200":
+          description: Active products
+  /api/v1/campaigns:
+    get:
+      tags: [Campaigns]
+      operationId: listCampaigns
+      parameters:
+        - {name: keyword, in: query, schema: {type: string}}
+        - {name: categoryId, in: query, schema: {type: integer, format: int64}}
+      responses:
+        "200":
+          description: Active campaigns
+    post:
+      tags: [Campaigns]
+      operationId: createCampaign
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCampaignRequest"
+      responses:
+        "200":
+          description: Campaign created
+        "403":
+          $ref: "#/components/responses/Error"
+  /api/v1/campaigns/{campaignId}/orders:
+    post:
+      tags: [Orders]
+      operationId: placeOrder
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: campaignId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9_-]{8,64}$"
+      responses:
+        "200":
+          description: Order created or idempotently replayed
+        "409":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+  /api/v1/orders:
+    get:
+      tags: [Orders]
+      operationId: listMyOrders
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Current user's latest orders
+  /api/v1/orders/{orderNo}:
+    get:
+      tags: [Orders]
+      operationId: getOrder
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orderNo
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Order detail
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/orders/{orderNo}/pay:
+    post:
+      tags: [Orders]
+      operationId: payOrder
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orderNo
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Payment state transition completed
+        "409":
+          $ref: "#/components/responses/Error"
+  /api/v1/orders/{orderNo}/cancel:
+    post:
+      tags: [AfterSales]
+      operationId: cancelOrder
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: orderNo, in: path, required: true, schema: {type: string}}
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: {type: string, maxLength: 500}
+      responses:
+        "200": {description: Pending order cancelled and stock restored}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/v1/orders/{orderNo}/returns:
+    post:
+      tags: [AfterSales]
+      operationId: createReturn
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: orderNo, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: {type: string, minLength: 5, maxLength: 500}
+      responses:
+        "200": {description: Return request created}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/v1/returns:
+    get:
+      tags: [AfterSales]
+      operationId: listMyReturns
+      security: [{bearerAuth: []}]
+      responses:
+        "200": {description: Current user's return requests}
+  /api/v1/orders/{orderNo}/reviews:
+    post:
+      tags: [Reviews]
+      operationId: createPurchasedReview
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: orderNo, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rating, content]
+              properties:
+                rating: {type: integer, minimum: 1, maximum: 5}
+                content: {type: string, minLength: 3, maxLength: 1000}
+      responses:
+        "200": {description: Verified-purchase review created}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/v1/products/{productId}/reviews:
+    get:
+      tags: [Reviews]
+      operationId: listVisibleProductReviews
+      parameters:
+        - {name: productId, in: path, required: true, schema: {type: integer, format: int64}}
+      responses:
+        "200": {description: Visible reviews with masked reviewer names}
+  /api/v1/admin/orders:
+    get:
+      tags: [Admin]
+      operationId: listAdminOrders
+      security: [{bearerAuth: []}]
+      responses:
+        "200": {description: Recent orders across all users}
+  /api/v1/admin/returns:
+    get:
+      tags: [Admin]
+      operationId: listAdminReturns
+      security: [{bearerAuth: []}]
+      responses:
+        "200": {description: Return workbench}
+  /api/v1/admin/returns/{returnId}/decision:
+    patch:
+      tags: [Admin]
+      operationId: decideReturn
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: returnId, in: path, required: true, schema: {type: integer, format: int64}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approved]
+              properties:
+                approved: {type: boolean}
+                note: {type: string, maxLength: 500}
+      responses:
+        "200": {description: Return approved or rejected}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/v1/admin/reviews:
+    get:
+      tags: [Admin]
+      operationId: listAdminReviews
+      security: [{bearerAuth: []}]
+      responses:
+        "200": {description: Reviews including real usernames and hidden records}
+  /api/v1/admin/reviews/{reviewId}/visibility:
+    patch:
+      tags: [Admin]
+      operationId: changeReviewVisibility
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: reviewId, in: path, required: true, schema: {type: integer, format: int64}}
+      responses:
+        "200": {description: Review visibility changed}
+  /api/v1/admin/reviews/{reviewId}/reply:
+    patch:
+      tags: [Admin]
+      operationId: replyReview
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: reviewId, in: path, required: true, schema: {type: integer, format: int64}}
+      responses:
+        "200": {description: Merchant reply saved}
+  /api/v1/admin/variants/{variantId}/price:
+    patch:
+      tags: [Admin]
+      operationId: changeVariantPrice
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: variantId, in: path, required: true, schema: {type: integer, format: int64}}
+      responses:
+        "200": {description: SKU list price changed}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  responses:
+    Error:
+      description: Standard error envelope
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+    TokenResponseEnvelope:
+      type: object
+      properties:
+        code:
+          type: string
+          const: OK
+        data:
+          type: object
+          properties:
+            accessToken:
+              type: string
+            tokenType:
+              type: string
+              const: Bearer
+            expiresInSeconds:
+              type: integer
+              format: int64
+            role:
+              type: string
+    CreateCampaignRequest:
+      type: object
+      required: [productId, flashPrice, totalStock, startsAt, endsAt]
+      properties:
+        productId:
+          type: integer
+          format: int64
+        flashPrice:
+          type: number
+        totalStock:
+          type: integer
+          minimum: 1
+        startsAt:
+          type: string
+          format: date-time
+        endsAt:
+          type: string
+          format: date-time
+    ErrorEnvelope:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        traceId:
+          type: string

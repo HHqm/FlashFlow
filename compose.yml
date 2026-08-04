@@ -1,0 +1,187 @@
+name: flashflow
+
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-flashflow_root}
+      MYSQL_DATABASE: flashflow_trade
+      MYSQL_USER: flashflow
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-flashflow_app}
+      TZ: UTC
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+00:00
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    networks: [flashflow]
+
+  redis:
+    image: redis:8.4.4-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-flashflow_redis}
+    command:
+      - sh
+      - -c
+      - exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    networks: [flashflow]
+
+  kafka:
+    image: apache/kafka:4.3.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    ports:
+      - "29092:29092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+    networks: [flashflow]
+
+  trade-service:
+    build:
+      context: .
+      dockerfile: trade-service/Dockerfile
+    environment:
+      MYSQL_URL: jdbc:mysql://mysql:3306/flashflow_trade?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&rewriteBatchedStatements=true
+      MYSQL_USER: flashflow
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-flashflow_app}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-flashflow_redis}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      JWT_SECRET: ${JWT_SECRET:-change-this-development-secret-to-at-least-32-bytes}
+    ports:
+      - "8081:8081"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [flashflow]
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: notification-service/Dockerfile
+    environment:
+      MYSQL_URL: jdbc:mysql://mysql:3306/flashflow_notification?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&rewriteBatchedStatements=true
+      MYSQL_USER: flashflow
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-flashflow_app}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    ports:
+      - "8082:8082"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [flashflow]
+
+  gateway-service:
+    build:
+      context: .
+      dockerfile: gateway-service/Dockerfile
+    environment:
+      TRADE_SERVICE_URL: http://trade-service:8081
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-flashflow_redis}
+      JWT_SECRET: ${JWT_SECRET:-change-this-development-secret-to-at-least-32-bytes}
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      trade-service:
+        condition: service_started
+    restart: unless-stopped
+    networks: [flashflow]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      gateway-service:
+        condition: service_started
+      notification-service:
+        condition: service_started
+    restart: unless-stopped
+    networks: [flashflow]
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    profiles: [tools]
+    environment:
+      KAFKA_CLUSTERS_0_NAME: flashflow
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    ports:
+      - "8090:8080"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks: [flashflow]
+
+  prometheus:
+    image: prom/prometheus:v3.7.3
+    profiles: [tools]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks: [flashflow]
+
+networks:
+  flashflow:
+    driver: bridge
+
+volumes:
+  mysql-data:
+  redis-data:
+  kafka-data:
+  prometheus-data:

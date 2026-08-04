@@ -1,0 +1,152 @@
+package com.flashflow.trade.campaign;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
+
+import com.flashflow.trade.common.BusinessException;
+import com.flashflow.trade.common.ErrorCode;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataAccessException;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.stereotype.Component;
+
+@Component
+public class SeckillRedisRepository {
+
+    private final StringRedisTemplate redisTemplate;
+    private final DefaultRedisScript<String> reserveScript;
+    private final DefaultRedisScript<Long> compensateScript;
+    private final DefaultRedisScript<Long> rateLimitScript;
+    private final int requestsPerSecond;
+    private final Counter reservedCounter;
+    private final Counter rejectedCounter;
+
+    public SeckillRedisRepository(
+            StringRedisTemplate redisTemplate,
+            DefaultRedisScript<String> seckillReserveScript,
+            DefaultRedisScript<Long> seckillCompensateScript,
+            DefaultRedisScript<Long> rateLimitScript,
+            @Value("${flashflow.seckill.requests-per-second:5}") int requestsPerSecond,
+            MeterRegistry meterRegistry
+    ) {
+        this.redisTemplate = redisTemplate;
+        this.reserveScript = seckillReserveScript;
+        this.compensateScript = seckillCompensateScript;
+        this.rateLimitScript = rateLimitScript;
+        this.requestsPerSecond = requestsPerSecond;
+        this.reservedCounter = meterRegistry.counter("flashflow.seckill.reserved");
+        this.rejectedCounter = meterRegistry.counter("flashflow.seckill.rejected");
+    }
+
+    public void checkRateLimit(long userId) {
+        String key = "flashflow:rate:seckill:" + userId + ":" + Instant.now().getEpochSecond();
+        try {
+            Long allowed = redisTemplate.execute(
+                    rateLimitScript,
+                    List.of(key),
+                    Integer.toString(requestsPerSecond),
+                    "2");
+            if (allowed == null || allowed == 0L) {
+                rejectedCounter.increment();
+                throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS);
+            }
+        } catch (BusinessException exception) {
+            throw exception;
+        } catch (DataAccessException exception) {
+            throw new BusinessException(ErrorCode.INFRASTRUCTURE_UNAVAILABLE, "Redis 暂时不可用");
+        }
+    }
+
+    public ReservationResult reserve(
+            long campaignId,
+            long userId,
+            String idempotencyKey,
+            String orderNo,
+            Instant campaignEndsAt
+    ) {
+        return reserve(campaignId, userId, idempotencyKey, orderNo, campaignEndsAt, 1, 1);
+    }
+
+    public ReservationResult reserve(
+            long campaignId,
+            long userId,
+            String idempotencyKey,
+            String orderNo,
+            Instant campaignEndsAt,
+            int quantity,
+            int purchaseLimit
+    ) {
+        String purchaserKey = purchaserKey(campaignId, userId);
+        String requestKey = requestKey(userId, idempotencyKey);
+        long ttlSeconds = Math.max(
+                Duration.between(Instant.now(), campaignEndsAt).plus(Duration.ofDays(1)).toSeconds(),
+                Duration.ofMinutes(5).toSeconds());
+        try {
+            String result = redisTemplate.execute(
+                    reserveScript,
+                    List.of(CampaignCacheInitializer.stockKey(campaignId), purchaserKey, requestKey),
+                    orderNo,
+                    Long.toString(ttlSeconds),
+                    Integer.toString(quantity),
+                    Integer.toString(purchaseLimit));
+            if (result == null) {
+                throw new BusinessException(ErrorCode.INFRASTRUCTURE_UNAVAILABLE);
+            }
+            if (result.startsWith("RESERVED|")) {
+                reservedCounter.increment();
+                return ReservationResult.reserved(result.substring("RESERVED|".length()));
+            }
+            if (result.startsWith("DUPLICATE|")) {
+                return ReservationResult.duplicate(result.substring("DUPLICATE|".length()));
+            }
+            rejectedCounter.increment();
+            return switch (result) {
+                case "SOLD_OUT" -> new ReservationResult(ReservationResult.Status.SOLD_OUT, null);
+                case "ALREADY_PURCHASED" ->
+                        new ReservationResult(ReservationResult.Status.ALREADY_PURCHASED, null);
+                case "LIMIT_EXCEEDED" ->
+                        new ReservationResult(ReservationResult.Status.LIMIT_EXCEEDED, null);
+                default -> throw new BusinessException(
+                        ErrorCode.INFRASTRUCTURE_UNAVAILABLE,
+                        "Redis 返回未知预占结果");
+            };
+        } catch (BusinessException exception) {
+            throw exception;
+        } catch (DataAccessException exception) {
+            throw new BusinessException(ErrorCode.INFRASTRUCTURE_UNAVAILABLE, "Redis 暂时不可用");
+        }
+    }
+
+    public void compensate(long campaignId, long userId, String idempotencyKey, String orderNo) {
+        compensate(campaignId, userId, idempotencyKey, orderNo, 1);
+    }
+
+    public void compensate(
+            long campaignId,
+            long userId,
+            String idempotencyKey,
+            String orderNo,
+            int quantity
+    ) {
+        redisTemplate.execute(
+                compensateScript,
+                List.of(
+                        CampaignCacheInitializer.stockKey(campaignId),
+                        purchaserKey(campaignId, userId),
+                        requestKey(userId, idempotencyKey)),
+                orderNo,
+                Integer.toString(quantity));
+    }
+
+    private static String purchaserKey(long campaignId, long userId) {
+        return "flashflow:campaign:" + campaignId + ":buyer:" + userId;
+    }
+
+    private static String requestKey(long userId, String idempotencyKey) {
+        return "flashflow:idempotency:" + userId + ":" + idempotencyKey;
+    }
+}
