@@ -24,6 +24,8 @@ spring:
       hibernate:
         jdbc:
           time_zone: UTC
+          batch_size: 100
+        order_inserts: true
   flyway:
     enabled: true
     locations: classpath:db/migration
@@ -34,12 +36,14 @@ spring:
     consumer:
       auto-offset-reset: earliest
       enable-auto-commit: false
+      max-poll-records: 200
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       properties:
         isolation.level: read_committed
     listener:
-      ack-mode: record
+      type: batch
+      ack-mode: batch
     producer:
       acks: all
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
@@ -55,6 +59,7 @@ flashflow:
   kafka:
     order-events-topic: ${ORDER_EVENTS_TOPIC:flashflow.order-events.v1}
     notification-group: ${NOTIFICATION_GROUP:flashflow-notification-v1}
+    listener-concurrency: ${NOTIFICATION_LISTENER_CONCURRENCY:3}
     partitions: ${ORDER_EVENTS_PARTITIONS:6}
 
 management:

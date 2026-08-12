@@ -36,9 +36,14 @@ public class OrderController {
             @Valid @RequestBody(required = false) OrderDtos.PlaceOrderRequest request
     ) {
         validateIdempotencyKey(idempotencyKey);
-        int quantity = request == null ? 1 : request.quantity();
+        if (request == null || request.addressId() == null) {
+            throw new com.flashflow.trade.common.BusinessException(
+                    com.flashflow.trade.common.ErrorCode.VALIDATION_FAILED,
+                    "请选择收货地址");
+        }
+        int quantity = request.quantity();
         return ApiResponse.success(orderService.placeOrder(
-                userId(jwt), campaignId, idempotencyKey, quantity));
+                userId(jwt), campaignId, idempotencyKey, quantity, request.addressId()));
     }
 
     @GetMapping("/orders")
@@ -69,6 +74,24 @@ public class OrderController {
             @PathVariable String orderNo
     ) {
         return ApiResponse.success(commandService.pay(userId(jwt), orderNo));
+    }
+
+    @PostMapping("/admin/orders/{orderNo}/ship")
+    @PreAuthorize("hasAuthority('ROLE_ADMIN')")
+    ApiResponse<OrderDtos.OrderView> ship(
+            @PathVariable String orderNo,
+            @Valid @RequestBody OrderDtos.ShipOrderRequest request
+    ) {
+        return ApiResponse.success(commandService.ship(orderNo, request));
+    }
+
+    @PostMapping("/orders/{orderNo}/receive")
+    @PreAuthorize("hasAuthority('ROLE_USER')")
+    ApiResponse<OrderDtos.OrderView> receive(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable String orderNo
+    ) {
+        return ApiResponse.success(commandService.receive(userId(jwt), orderNo));
     }
 
     private static long userId(Jwt jwt) {

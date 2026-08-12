@@ -1,6 +1,7 @@
 package com.flashflow.trade.outbox;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.UUID;
 
 import org.springframework.stereotype.Service;
@@ -16,8 +17,11 @@ public class OutboxStateService {
     }
 
     @Transactional
-    public void markPublished(UUID eventId) {
-        outboxRepository.findById(eventId).ifPresent(event -> event.markPublished(Instant.now()));
+    public int markPublished(Collection<UUID> eventIds) {
+        if (eventIds.isEmpty()) {
+            return 0;
+        }
+        return outboxRepository.markPublished(eventIds, Instant.now());
     }
 
     @Transactional

@@ -57,6 +57,31 @@ public class OrderEntity {
     @Column(name = "idempotency_key", nullable = false, length = 64)
     private String idempotencyKey;
 
+    @Column(name = "recipient_name", nullable = false, length = 80)
+    private String recipientName;
+
+    @Column(name = "recipient_phone", nullable = false, length = 32)
+    private String recipientPhone;
+
+    @Column(name = "shipping_address", nullable = false, length = 500)
+    private String shippingAddress;
+
+    @Column(length = 80)
+    private String carrier;
+
+    @Column(name = "tracking_no", length = 80)
+    private String trackingNo;
+
+    @Column(name = "shipped_at")
+    private Instant shippedAt;
+
+    @Column(name = "received_at")
+    private Instant receivedAt;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "refund_source_status", length = 32)
+    private OrderStatus refundSourceStatus;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -90,7 +115,8 @@ public class OrderEntity {
             BigDecimal amount,
             String idempotencyKey
     ) {
-        this(orderNo, userId, campaignId, productId, null, amount, 1, "", "", idempotencyKey);
+        this(orderNo, userId, campaignId, productId, null, amount, 1, "", "", idempotencyKey,
+                "测试收件人", "13800000000", "测试收货地址");
     }
 
     public OrderEntity(
@@ -103,7 +129,10 @@ public class OrderEntity {
             int quantity,
             String productName,
             String variantLabel,
-            String idempotencyKey
+            String idempotencyKey,
+            String recipientName,
+            String recipientPhone,
+            String shippingAddress
     ) {
         this.orderNo = orderNo;
         this.userId = userId;
@@ -115,6 +144,9 @@ public class OrderEntity {
         this.productName = productName;
         this.variantLabel = variantLabel;
         this.idempotencyKey = idempotencyKey;
+        this.recipientName = recipientName;
+        this.recipientPhone = recipientPhone;
+        this.shippingAddress = shippingAddress;
         this.status = OrderStatus.PENDING_PAYMENT;
         this.createdAt = Instant.now();
         this.updatedAt = this.createdAt;
@@ -147,9 +179,10 @@ public class OrderEntity {
     }
 
     public void requestRefund(Instant now) {
-        if (status != OrderStatus.PAID) {
-            throw new BusinessException(ErrorCode.ORDER_STATUS_INVALID, "只有已支付订单可以申请退款");
+        if (status != OrderStatus.PAID && status != OrderStatus.SHIPPED && status != OrderStatus.RECEIVED) {
+            throw new BusinessException(ErrorCode.ORDER_STATUS_INVALID, "只有已支付、已发货或已收货订单可以申请退款");
         }
+        refundSourceStatus = status;
         status = OrderStatus.REFUND_REQUESTED;
         updatedAt = now;
     }
@@ -160,6 +193,7 @@ public class OrderEntity {
         }
         status = OrderStatus.REFUNDED;
         refundedAt = now;
+        refundSourceStatus = null;
         updatedAt = now;
     }
 
@@ -167,7 +201,28 @@ public class OrderEntity {
         if (status != OrderStatus.REFUND_REQUESTED) {
             throw new BusinessException(ErrorCode.ORDER_STATUS_INVALID);
         }
-        status = OrderStatus.PAID;
+        status = refundSourceStatus == null ? OrderStatus.PAID : refundSourceStatus;
+        refundSourceStatus = null;
+        updatedAt = now;
+    }
+
+    public void ship(String carrier, String trackingNo, Instant now) {
+        if (status != OrderStatus.PAID) {
+            throw new BusinessException(ErrorCode.ORDER_STATUS_INVALID, "只有已支付订单可以发货");
+        }
+        this.carrier = carrier;
+        this.trackingNo = trackingNo;
+        this.shippedAt = now;
+        this.status = OrderStatus.SHIPPED;
+        this.updatedAt = now;
+    }
+
+    public void receive(Instant now) {
+        if (status != OrderStatus.SHIPPED) {
+            throw new BusinessException(ErrorCode.ORDER_STATUS_INVALID, "只有已发货订单可以确认收货");
+        }
+        receivedAt = now;
+        status = OrderStatus.RECEIVED;
         updatedAt = now;
     }
 
@@ -242,4 +297,11 @@ public class OrderEntity {
     public Instant getRefundedAt() {
         return refundedAt;
     }
+    public String getRecipientName() { return recipientName; }
+    public String getRecipientPhone() { return recipientPhone; }
+    public String getShippingAddress() { return shippingAddress; }
+    public String getCarrier() { return carrier; }
+    public String getTrackingNo() { return trackingNo; }
+    public Instant getShippedAt() { return shippedAt; }
+    public Instant getReceivedAt() { return receivedAt; }
 }

@@ -11,6 +11,7 @@ import com.flashflow.trade.product.ProductEntity;
 import com.flashflow.trade.product.ProductRepository;
 import com.flashflow.trade.product.ProductVariantEntity;
 import com.flashflow.trade.product.ProductVariantRepository;
+import com.flashflow.trade.order.OrderCampaignContextService;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,6 +25,7 @@ public class CampaignService {
     private final CategoryRepository categoryRepository;
     private final ApplicationEventPublisher eventPublisher;
     private final CampaignCacheInitializer cacheInitializer;
+    private final OrderCampaignContextService orderCampaignContextService;
 
     public CampaignService(
             CampaignRepository campaignRepository,
@@ -31,7 +33,8 @@ public class CampaignService {
             ProductVariantRepository variantRepository,
             CategoryRepository categoryRepository,
             ApplicationEventPublisher eventPublisher,
-            CampaignCacheInitializer cacheInitializer
+            CampaignCacheInitializer cacheInitializer,
+            OrderCampaignContextService orderCampaignContextService
     ) {
         this.campaignRepository = campaignRepository;
         this.productRepository = productRepository;
@@ -39,6 +42,7 @@ public class CampaignService {
         this.categoryRepository = categoryRepository;
         this.eventPublisher = eventPublisher;
         this.cacheInitializer = cacheInitializer;
+        this.orderCampaignContextService = orderCampaignContextService;
     }
 
     @Transactional(readOnly = true)
@@ -118,6 +122,7 @@ public class CampaignService {
         CampaignEntity campaign = campaignRepository.findById(campaignId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.CAMPAIGN_NOT_FOUND));
         campaign.changeStatus(request.status());
+        orderCampaignContextService.evict(campaignId);
         cacheInitializer.warm(campaign, true);
         return toView(campaign);
     }

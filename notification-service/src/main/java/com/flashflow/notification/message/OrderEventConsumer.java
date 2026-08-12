@@ -1,5 +1,7 @@
 package com.flashflow.notification.message;
 
+import java.util.List;
+
 import com.flashflow.common.event.DomainEvent;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
@@ -19,9 +21,20 @@ public class OrderEventConsumer {
 
     @KafkaListener(
             topics = "${flashflow.kafka.order-events-topic}",
-            groupId = "${flashflow.kafka.notification-group}")
-    public void consume(String payload) throws JacksonException {
-        DomainEvent event = objectMapper.readValue(payload, DomainEvent.class);
-        notificationHandler.handle(event);
+            groupId = "${flashflow.kafka.notification-group}",
+            concurrency = "${flashflow.kafka.listener-concurrency:3}")
+    public void consume(List<String> payloads) {
+        List<DomainEvent> events = payloads.stream()
+                .map(this::readEvent)
+                .toList();
+        notificationHandler.handleBatch(events);
+    }
+
+    private DomainEvent readEvent(String payload) {
+        try {
+            return objectMapper.readValue(payload, DomainEvent.class);
+        } catch (JacksonException exception) {
+            throw new IllegalArgumentException("Invalid order event payload", exception);
+        }
     }
 }

@@ -44,8 +44,8 @@ public class ReviewService {
         if (order.getUserId() != userId) {
             throw new BusinessException(ErrorCode.FORBIDDEN);
         }
-        if (order.getStatus() != OrderStatus.PAID) {
-            throw new BusinessException(ErrorCode.ORDER_STATUS_INVALID, "只有已支付订单可以评价");
+        if (order.getStatus() != OrderStatus.RECEIVED) {
+            throw new BusinessException(ErrorCode.ORDER_STATUS_INVALID, "只有确认收货后才能评价");
         }
         if (reviewRepository.existsByOrderId(order.getId())) {
             throw new BusinessException(ErrorCode.REVIEW_ALREADY_EXISTS);

@@ -4,13 +4,26 @@ import java.math.BigDecimal;
 import java.time.Instant;
 
 import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
 
 public final class OrderDtos {
 
     private OrderDtos() {
     }
 
-    public record PlaceOrderRequest(@Min(1) int quantity) {
+    public record PlaceOrderRequest(
+            @Min(1) int quantity,
+            @NotNull @Positive Long addressId
+    ) {
+    }
+
+    public record ShipOrderRequest(
+            @jakarta.validation.constraints.NotBlank
+            @jakarta.validation.constraints.Size(max = 80) String carrier,
+            @jakarta.validation.constraints.NotBlank
+            @jakarta.validation.constraints.Size(max = 80) String trackingNo
+    ) {
     }
 
     public record OrderView(
@@ -28,6 +41,13 @@ public final class OrderDtos {
             Instant cancelledAt,
             String cancelReason,
             Instant refundedAt,
+            String recipientName,
+            String recipientPhone,
+            String shippingAddress,
+            String carrier,
+            String trackingNo,
+            Instant shippedAt,
+            Instant receivedAt,
             boolean replayed
     ) {
         public static OrderView from(OrderEntity order, boolean replayed) {
@@ -46,6 +66,13 @@ public final class OrderDtos {
                     order.getCancelledAt(),
                     order.getCancelReason(),
                     order.getRefundedAt(),
+                    order.getRecipientName(),
+                    order.getRecipientPhone(),
+                    order.getShippingAddress(),
+                    order.getCarrier(),
+                    order.getTrackingNo(),
+                    order.getShippedAt(),
+                    order.getReceivedAt(),
                     replayed);
         }
     }

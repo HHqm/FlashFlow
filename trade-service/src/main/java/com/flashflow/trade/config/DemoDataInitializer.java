@@ -7,6 +7,9 @@ import java.util.List;
 
 import com.flashflow.trade.auth.UserEntity;
 import com.flashflow.trade.auth.UserRepository;
+import com.flashflow.trade.address.AddressDtos;
+import com.flashflow.trade.address.ShippingAddressEntity;
+import com.flashflow.trade.address.ShippingAddressRepository;
 import com.flashflow.trade.campaign.CampaignCacheInitializer;
 import com.flashflow.trade.campaign.CampaignEntity;
 import com.flashflow.trade.campaign.CampaignRepository;
@@ -39,6 +42,7 @@ public class DemoDataInitializer implements ApplicationRunner {
     private final CampaignRepository campaignRepository;
     private final PasswordEncoder passwordEncoder;
     private final CampaignCacheInitializer cacheInitializer;
+    private final ShippingAddressRepository addressRepository;
 
     public DemoDataInitializer(
             UserRepository userRepository,
@@ -47,7 +51,8 @@ public class DemoDataInitializer implements ApplicationRunner {
             ProductVariantRepository variantRepository,
             CampaignRepository campaignRepository,
             PasswordEncoder passwordEncoder,
-            CampaignCacheInitializer cacheInitializer
+            CampaignCacheInitializer cacheInitializer,
+            ShippingAddressRepository addressRepository
     ) {
         this.userRepository = userRepository;
         this.categoryRepository = categoryRepository;
@@ -56,13 +61,15 @@ public class DemoDataInitializer implements ApplicationRunner {
         this.campaignRepository = campaignRepository;
         this.passwordEncoder = passwordEncoder;
         this.cacheInitializer = cacheInitializer;
+        this.addressRepository = addressRepository;
     }
 
     @Override
     @Transactional
     public void run(ApplicationArguments args) {
-        seedUser("demo", "Demo@123456", "USER");
+        UserEntity demoUser = seedUser("demo", "Demo@123456", "USER");
         seedUser("admin", "Admin@123456", "ADMIN");
+        seedAddress(demoUser);
 
         ProductVariantEntity headphone = seedProduct(
                 "数码影音",
@@ -159,9 +166,25 @@ public class DemoDataInitializer implements ApplicationRunner {
                 Instant.now().plus(7, ChronoUnit.DAYS)));
     }
 
-    private void seedUser(String username, String password, String role) {
-        if (userRepository.findByUsername(username).isEmpty()) {
-            userRepository.save(new UserEntity(username, passwordEncoder.encode(password), role));
+    private UserEntity seedUser(String username, String password, String role) {
+        return userRepository.findByUsername(username)
+                .orElseGet(() -> userRepository.save(
+                        new UserEntity(username, passwordEncoder.encode(password), role)));
+    }
+
+    private void seedAddress(UserEntity user) {
+        if (!addressRepository.existsByUserId(user.getId())) {
+            addressRepository.save(new ShippingAddressEntity(
+                    user.getId(),
+                    new AddressDtos.SaveAddressRequest(
+                            "演示用户",
+                            "13800000000",
+                            "上海市",
+                            "上海市",
+                            "浦东新区",
+                            "张江路 88 号 FlashFlow 园区",
+                            "201210",
+                            true)));
         }
     }
 

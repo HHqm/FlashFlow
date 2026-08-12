@@ -37,10 +37,40 @@ GET {{gateway}}/api/v1/campaigns
     client.global.set("campaignId", response.body.data[0].id);
 %}
 
+### 查询我的收货地址
+GET {{gateway}}/api/v1/addresses
+Authorization: Bearer {{token}}
+
+> {%
+    client.global.set("addressId", response.body.data[0].id);
+%}
+
+### 新增收货地址
+POST {{gateway}}/api/v1/addresses
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "recipientName": "张三",
+  "phone": "13800000000",
+  "province": "上海市",
+  "city": "上海市",
+  "district": "浦东新区",
+  "detailAddress": "张江路 1 号 101 室",
+  "postalCode": "201210",
+  "defaultAddress": true
+}
+
 ### 创建订单（重复执行时保持相同 Idempotency-Key 可验证幂等）
 POST {{gateway}}/api/v1/campaigns/{{campaignId}}/orders
 Authorization: Bearer {{token}}
 Idempotency-Key: demo-request-00000001
+Content-Type: application/json
+
+{
+  "quantity": 1,
+  "addressId": {{addressId}}
+}
 
 > {%
     client.global.set("orderNo", response.body.data.orderNo);
@@ -56,6 +86,20 @@ Authorization: Bearer {{token}}
 
 ### 模拟支付
 POST {{gateway}}/api/v1/orders/{{orderNo}}/pay
+Authorization: Bearer {{token}}
+
+### 管理员发货
+POST {{gateway}}/api/v1/admin/orders/{{orderNo}}/ship
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "carrier": "顺丰速运",
+  "trackingNo": "SF1234567890"
+}
+
+### 用户确认收货
+POST {{gateway}}/api/v1/orders/{{orderNo}}/receive
 Authorization: Bearer {{token}}
 
 ### 查看用户站内通知（notification-service 内部接口）

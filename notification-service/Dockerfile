@@ -1,7 +1,8 @@
 FROM maven:3.9.11-eclipse-temurin-21 AS build
 WORKDIR /workspace
 COPY . .
-RUN mvn -B -ntp -pl notification-service -am package -DskipTests \
+RUN --mount=type=cache,target=/root/.m2 \
+    mvn -B -ntp -pl notification-service -am package -DskipTests \
     && cp notification-service/target/notification-service-*.jar /workspace/app.jar
 
 FROM eclipse-temurin:21-jre

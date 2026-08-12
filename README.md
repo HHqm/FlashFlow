@@ -1,6 +1,6 @@
 # FlashFlow 高并发限量购与订单履约平台
 
-FlashFlow 是一个面向 Java 后端求职作品集的生产化微服务电商项目。它既实现商品检索、SKU、订单、取消、退款售后、已购评价和运营审核等商城闭环，也围绕“限量商品抢购”实现网关鉴权、Redis 原子预占、MySQL 最终扣减、事务 Outbox、Kafka 异步解耦、消费幂等、失败重试、死信队列和库存补偿。
+FlashFlow 是一个面向 Java 后端求职作品集的生产化微服务电商项目。它实现商品检索、SKU、收货地址、订单地址快照、支付、发货、确认收货、退款售后、已购评价和运营审核等商城闭环，也围绕“限量商品抢购”实现网关鉴权、Redis 原子预占、MySQL 最终扣减、事务 Outbox、Kafka 异步解耦、消费幂等、失败重试、死信队列和库存补偿。
 
 FlashFlow 是一套带前台商城、运营后台和高并发秒杀链路的 Java 电商项目，重点覆盖以下工程问题：
 
@@ -9,7 +9,8 @@ FlashFlow 是一套带前台商城、运营后台和高并发秒杀链路的 Jav
 3. 数据库提交成功后，消息如何不丢；
 4. Kafka 重复投递时，下游如何不重复执行；
 5. 订单取消、退款审批和库存回补如何保持状态一致；
-6. 评价如何保证来自真实已购用户并支持运营审核。
+6. 发货、收货、退款与评价如何通过状态机避免越权和非法跳转；
+7. 评价如何保证来自真实已购且已确认收货的用户并支持运营审核。
 
 ## 技术栈
 
@@ -43,7 +44,7 @@ flowchart LR
 服务职责：
 
 - `gateway-service`：统一路由、JWT 校验、Redis 分布式限流、Trace ID 透传；
-- `trade-service`：用户登录、类目、SPU/SKU、商品检索、秒杀活动、库存预占、订单、支付、取消、退款售后、已购评价、Outbox；
+- `trade-service`：用户登录、类目、SPU/SKU、商品检索、收货地址、秒杀活动、库存预占、订单、支付、发货/收货、退款售后、已购评价、Outbox；
 - `notification-service`：Kafka 消费、Inbox 幂等、站内通知、失败重试与死信；
 - `flashflow-common`：版本化跨服务事件契约，不共享数据库实体。
 
@@ -54,10 +55,10 @@ flowchart LR
 系统按“前台用户、后台运营”分离职责：
 
 - 用户前台：按名称、类目、颜色和规格搜索商品，按价格或评分排序；查看颜色/规格 SKU、原价、秒杀价、库存、限购和已购评价；
-- 交易履约：选择数量下单和支付，待支付订单可主动取消；已支付订单可发起退款申请、查看进度，并在成交后发表一次 1～5 星真实评价；
+- 交易履约：维护收货地址并在下单时生成不可变地址快照；完成支付后由运营录入承运商和运单号，用户确认收货后可发表一次 1～5 星真实评价；
 - 运营后台：创建和启停类目，创建含多个颜色/规格 SKU 的商品，追加 SKU，独立维护售价、库存和状态，控制商品上架/下架；
 - 秒杀运营：选择具体 SKU 创建活动，配置活动价、活动库存、每人限购量和起止时间，控制活动启停并预热 Redis；
-- 订单与售后：管理员查看全量订单，审批或驳回退款并记录处理意见；审批成功后同步迁移订单状态、恢复 MySQL 活动库存并补偿 Redis；
+- 订单与售后：管理员查看全量订单、执行发货、审批或驳回退款并记录处理意见；驳回后恢复申请前的履约状态，审批成功后恢复 MySQL 活动库存并补偿 Redis；
 - 评价运营：管理员查看真实买家和关联订单，隐藏/恢复评价并发表商家回复；前台只聚合可见评价的平均分和数量；
 - 库存边界：创建秒杀活动时从 SKU 可售库存划拨活动库存，Redis Lua 按购买数量原子预扣，并由 MySQL 条件更新提供最终防超卖屏障；
 - 权限边界：`ADMIN` 只能管理商城、订单和售后，`USER` 才能购买、取消、退款和评价自己的订单；商品或 SKU 下架会自动暂停关联活动。
@@ -132,6 +133,10 @@ $token = $login.data.accessToken
 $campaigns = Invoke-RestMethod `
   -Uri "http://localhost:8080/api/v1/campaigns"
 $campaignId = $campaigns.data[0].id
+$addresses = Invoke-RestMethod `
+  -Uri "http://localhost:8080/api/v1/addresses" `
+  -Headers @{ Authorization = "Bearer $token" }
+$addressId = $addresses.data[0].id
 ```
 
 创建订单：
@@ -145,7 +150,7 @@ $order = Invoke-RestMethod -Method Post `
   -Uri "http://localhost:8080/api/v1/campaigns/$campaignId/orders" `
   -Headers $headers `
   -ContentType "application/json" `
-  -Body (@{ quantity = 1 } | ConvertTo-Json)
+  -Body (@{ quantity = 1; addressId = $addressId } | ConvertTo-Json)
 $orderNo = $order.data.orderNo
 ```
 
@@ -240,6 +245,7 @@ flashflow-platform/
 ## 求职材料
 
 - [简历项目描述](docs/resume.md)：可按实际压测结果替换占位数字；
+- [本地性能测试报告](docs/performance-test-2026-08-12.md)：包含分档吞吐、延迟、热点库存、幂等与瓶颈分析；
 - [面试追问手册](docs/interview-guide.md)：解释组件选择、边界与故障处理；
 - [OpenAPI 契约](docs/openapi.yaml)：主要外部接口定义；
 - [架构说明](docs/architecture.md)：一致性、扩展和生产化取舍。

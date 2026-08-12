@@ -9,12 +9,12 @@ spring:
     virtual:
       enabled: true
   datasource:
-    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/flashflow_trade?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&rewriteBatchedStatements=true}
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/flashflow_trade?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&rewriteBatchedStatements=true&cachePrepStmts=true&prepStmtCacheSize=250&prepStmtCacheSqlLimit=2048&useServerPrepStmts=true}
     username: ${MYSQL_USER:flashflow}
     password: ${MYSQL_PASSWORD:flashflow_app}
     hikari:
       maximum-pool-size: ${DB_POOL_SIZE:20}
-      minimum-idle: 5
+      minimum-idle: ${DB_POOL_MIN_IDLE:20}
       connection-timeout: 3000
       validation-timeout: 1000
   jpa:
@@ -25,7 +25,7 @@ spring:
       hibernate:
         jdbc:
           time_zone: UTC
-          batch_size: 50
+          batch_size: 100
         order_inserts: true
         order_updates: true
   flyway:
@@ -55,6 +55,9 @@ spring:
         enable.idempotence: true
         max.in.flight.requests.per.connection: 5
         delivery.timeout.ms: 120000
+        linger.ms: 5
+        batch.size: 65536
+        compression.type: lz4
   jackson:
     time-zone: UTC
   lifecycle:
@@ -71,14 +74,22 @@ flashflow:
     requests-per-second: ${SECKILL_REQUESTS_PER_SECOND:5}
   order:
     payment-timeout: ${PAYMENT_TIMEOUT:PT15M}
+    campaign-cache-ttl: ${ORDER_CAMPAIGN_CACHE_TTL:PT1S}
+    snapshot-cache-ttl: ${ORDER_SNAPSHOT_CACHE_TTL:PT5M}
+    write-stripes: ${ORDER_WRITE_STRIPES:4}
+    write-queue-capacity: ${ORDER_WRITE_QUEUE_CAPACITY:2048}
+    write-batch-size: ${ORDER_WRITE_BATCH_SIZE:64}
+    write-batch-window: ${ORDER_WRITE_BATCH_WINDOW:PT0.008S}
   kafka:
     order-events-topic: ${ORDER_EVENTS_TOPIC:flashflow.order-events.v1}
     partitions: ${ORDER_EVENTS_PARTITIONS:6}
   outbox:
     max-retries: ${OUTBOX_MAX_RETRIES:10}
+    batch-size: ${OUTBOX_BATCH_SIZE:500}
+    send-timeout: ${OUTBOX_SEND_TIMEOUT:PT5S}
   jobs:
     outbox-enabled: ${OUTBOX_JOB_ENABLED:true}
-    outbox-delay-ms: ${OUTBOX_JOB_DELAY_MS:1000}
+    outbox-delay-ms: ${OUTBOX_JOB_DELAY_MS:100}
     order-timeout-enabled: ${ORDER_TIMEOUT_JOB_ENABLED:true}
     order-timeout-delay-ms: ${ORDER_TIMEOUT_JOB_DELAY_MS:30000}
 

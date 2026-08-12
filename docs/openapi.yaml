@@ -10,6 +10,7 @@ tags:
   - name: Auth
   - name: Products
   - name: Campaigns
+  - name: Addresses
   - name: Orders
   - name: AfterSales
   - name: Reviews
@@ -89,6 +90,12 @@ paths:
           schema:
             type: string
             pattern: "^[A-Za-z0-9_-]{8,64}$"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlaceOrderRequest"
       responses:
         "200":
           description: Order created or idempotently replayed
@@ -96,6 +103,56 @@ paths:
           $ref: "#/components/responses/Error"
         "429":
           $ref: "#/components/responses/Error"
+  /api/v1/addresses:
+    get:
+      tags: [Addresses]
+      operationId: listAddresses
+      security: [{bearerAuth: []}]
+      responses:
+        "200": {description: Current user's shipping addresses}
+    post:
+      tags: [Addresses]
+      operationId: createAddress
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SaveAddressRequest"}
+      responses:
+        "200": {description: Shipping address created}
+  /api/v1/addresses/{addressId}:
+    put:
+      tags: [Addresses]
+      operationId: updateAddress
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: addressId, in: path, required: true, schema: {type: integer, format: int64}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SaveAddressRequest"}
+      responses:
+        "200": {description: Shipping address updated}
+        "404": {$ref: "#/components/responses/Error"}
+    delete:
+      tags: [Addresses]
+      operationId: deleteAddress
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: addressId, in: path, required: true, schema: {type: integer, format: int64}}
+      responses:
+        "200": {description: Shipping address deleted}
+  /api/v1/addresses/{addressId}/default:
+    patch:
+      tags: [Addresses]
+      operationId: setDefaultAddress
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: addressId, in: path, required: true, schema: {type: integer, format: int64}}
+      responses:
+        "200": {description: Default address changed}
   /api/v1/orders:
     get:
       tags: [Orders]
@@ -139,6 +196,16 @@ paths:
           description: Payment state transition completed
         "409":
           $ref: "#/components/responses/Error"
+  /api/v1/orders/{orderNo}/receive:
+    post:
+      tags: [Orders]
+      operationId: confirmReceipt
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: orderNo, in: path, required: true, schema: {type: string}}
+      responses:
+        "200": {description: Owner confirmed order receipt}
+        "409": {$ref: "#/components/responses/Error"}
   /api/v1/orders/{orderNo}/cancel:
     post:
       tags: [AfterSales]
@@ -217,6 +284,26 @@ paths:
       security: [{bearerAuth: []}]
       responses:
         "200": {description: Recent orders across all users}
+  /api/v1/admin/orders/{orderNo}/ship:
+    post:
+      tags: [Admin]
+      operationId: shipOrder
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: orderNo, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [carrier, trackingNo]
+              properties:
+                carrier: {type: string, maxLength: 80}
+                trackingNo: {type: string, maxLength: 80}
+      responses:
+        "200": {description: Paid order shipped}
+        "409": {$ref: "#/components/responses/Error"}
   /api/v1/admin/returns:
     get:
       tags: [Admin]
@@ -338,6 +425,24 @@ components:
         endsAt:
           type: string
           format: date-time
+    PlaceOrderRequest:
+      type: object
+      required: [quantity, addressId]
+      properties:
+        quantity: {type: integer, minimum: 1}
+        addressId: {type: integer, format: int64}
+    SaveAddressRequest:
+      type: object
+      required: [recipientName, phone, province, city, district, detailAddress]
+      properties:
+        recipientName: {type: string, maxLength: 80}
+        phone: {type: string, maxLength: 32}
+        province: {type: string, maxLength: 80}
+        city: {type: string, maxLength: 80}
+        district: {type: string, maxLength: 80}
+        detailAddress: {type: string, maxLength: 255}
+        postalCode: {type: string, maxLength: 20}
+        defaultAddress: {type: boolean, default: false}
     ErrorEnvelope:
       type: object
       properties:

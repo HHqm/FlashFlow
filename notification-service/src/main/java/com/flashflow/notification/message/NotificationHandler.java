@@ -1,6 +1,7 @@
 package com.flashflow.notification.message;
 
 import java.time.Instant;
+import java.util.List;
 
 import com.flashflow.common.event.DomainEvent;
 import com.flashflow.common.event.EventTypes;
@@ -34,6 +35,15 @@ public class NotificationHandler {
 
     @Transactional
     public void handle(DomainEvent event) {
+        process(event);
+    }
+
+    @Transactional
+    public void handleBatch(List<DomainEvent> events) {
+        events.forEach(this::process);
+    }
+
+    private void process(DomainEvent event) {
         int inserted = processedMessageRepository.insertIfAbsent(
                 event.eventId(),
                 event.eventType(),
@@ -63,6 +73,13 @@ public class NotificationHandler {
             case EventTypes.ORDER_PAID -> new NotificationContent(
                     "ORDER_PAID",
                     "订单 " + orderNo + " 支付成功，正在为您安排履约。");
+            case EventTypes.ORDER_SHIPPED -> new NotificationContent(
+                    "ORDER_SHIPPED",
+                    "订单 " + orderNo + " 已由 " + stringValue(event, "carrier")
+                            + " 发货，运单号 " + stringValue(event, "trackingNo") + "。");
+            case EventTypes.ORDER_RECEIVED -> new NotificationContent(
+                    "ORDER_RECEIVED",
+                    "订单 " + orderNo + " 已确认收货，现在可以发表已购评价。");
             case EventTypes.ORDER_CANCELLED -> new NotificationContent(
                     "ORDER_CANCELLED",
                     "PAYMENT_TIMEOUT".equals(String.valueOf(event.payload().get("reason")))

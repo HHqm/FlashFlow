@@ -32,6 +32,7 @@ import {
   Tag,
   TimerReset,
   Trash2,
+  Truck,
   UserRoundCog,
   Zap,
 } from "@lucide/vue";
@@ -80,6 +81,7 @@ const emit = defineEmits<{
   decideReturn: [id: number, approved: boolean, note: string];
   setReviewVisibility: [id: number, visible: boolean];
   replyReview: [id: number, reply: string];
+  shipOrder: [orderNo: string, carrier: string, trackingNo: string];
 }>();
 
 type AdminTab = "overview" | "products" | "campaigns" | "orders" | "reviews" | "categories";
@@ -89,6 +91,7 @@ const stockDrafts = reactive<Record<number, number>>({});
 const priceDrafts = reactive<Record<number, number>>({});
 const returnNotes = reactive<Record<number, string>>({});
 const reviewReplies = reactive<Record<number, string>>({});
+const shippingDrafts = reactive<Record<string, { carrier: string; trackingNo: string }>>({});
 const orderKeyword = ref("");
 const orderStatus = ref("ALL");
 const variantForms = reactive<Record<number, VariantInput>>({});
@@ -124,9 +127,18 @@ const allVariants = computed(() =>
   ),
 );
 const listedProducts = computed(() => props.products.filter((item) => item.active).length);
-const activeCampaigns = computed(
-  () => props.campaigns.filter((item) => item.status === "ACTIVE").length,
-);
+const liveCampaigns = computed(() => {
+  const now = Date.now();
+  return props.campaigns.filter(
+    (item) =>
+      item.status === "ACTIVE" &&
+      item.productActive &&
+      item.variantActive &&
+      new Date(item.startsAt).getTime() <= now &&
+      new Date(item.endsAt).getTime() > now,
+  );
+});
+const activeCampaigns = computed(() => liveCampaigns.value.length);
 const skuCount = computed(() => props.products.reduce((sum, item) => sum + item.variants.length, 0));
 const skuStock = computed(() =>
   props.products.reduce(
@@ -144,7 +156,10 @@ const filteredOrders = computed(() => {
       !keyword ||
       order.orderNo.toLowerCase().includes(keyword) ||
       order.productName.toLowerCase().includes(keyword) ||
-      order.variantLabel.toLowerCase().includes(keyword);
+      order.variantLabel.toLowerCase().includes(keyword) ||
+      order.recipientName.toLowerCase().includes(keyword) ||
+      order.recipientPhone.includes(keyword) ||
+      (order.trackingNo?.toLowerCase().includes(keyword) ?? false);
     return statusMatch && keywordMatch;
   });
 });
@@ -227,10 +242,24 @@ function currentPrice(variantId: number, fallback: number) {
   return priceDrafts[variantId] ?? fallback;
 }
 
+function shippingDraft(orderNo: string) {
+  if (!shippingDrafts[orderNo]) {
+    shippingDrafts[orderNo] = { carrier: "顺丰速运", trackingNo: "" };
+  }
+  return shippingDrafts[orderNo];
+}
+
+function submitShipment(orderNo: string) {
+  const draft = shippingDraft(orderNo);
+  emit("shipOrder", orderNo, draft.carrier.trim(), draft.trackingNo.trim());
+}
+
 function orderStatusText(status: string) {
   return ({
     PENDING_PAYMENT: "待支付",
     PAID: "已支付",
+    SHIPPED: "已发货",
+    RECEIVED: "已收货",
     REFUND_REQUESTED: "退款审核中",
     REFUNDED: "已退款",
     CANCELLED: "已关闭",
@@ -389,7 +418,7 @@ function statusText(status: string) {
           <div class="recent-campaigns">
             <div class="admin-section-title"><div><p>RECENT CAMPAIGNS</p><h2>最近活动</h2></div><button @click="activeTab = 'campaigns'">管理全部 <ChevronRight :size="16" /></button></div>
             <div class="mini-campaign-list">
-              <article v-for="campaign in campaigns.slice(0, 4)" :key="campaign.id">
+              <article v-for="campaign in liveCampaigns.slice(0, 4)" :key="campaign.id">
                 <img :src="campaign.imageUrl || '/product-images/headphone.svg'" alt="" />
                 <div><strong>{{ campaign.productName }}</strong><span>{{ campaign.colorName }} · {{ campaign.specification }}</span></div>
                 <b>{{ money(campaign.flashPrice) }}</b>
@@ -552,7 +581,7 @@ function statusText(status: string) {
             <div>
               <p>ORDER & AFTER-SALES</p>
               <h1>订单与售后管理</h1>
-              <span>查询完整订单状态，审核买家退款申请并保留处理说明。</span>
+              <span>查询完整订单状态，录入承运商与运单号，并处理买家退款申请。</span>
             </div>
             <span class="scope-note"><RotateCcw :size="16" /> {{ pendingReturns }} 笔退款待处理</span>
           </div>
@@ -563,6 +592,8 @@ function statusText(status: string) {
               <option value="ALL">全部状态</option>
               <option value="PENDING_PAYMENT">待支付</option>
               <option value="PAID">已支付</option>
+              <option value="SHIPPED">已发货</option>
+              <option value="RECEIVED">已收货</option>
               <option value="REFUND_REQUESTED">退款审核中</option>
               <option value="REFUNDED">已退款</option>
               <option value="CANCELLED">已关闭</option>
@@ -576,7 +607,7 @@ function statusText(status: string) {
                 <div><strong>交易订单</strong><small>最近 200 笔订单</small></div>
               </div>
               <article v-for="order in filteredOrders" :key="order.orderNo" class="admin-order-row">
-                <div>
+                <div class="admin-order-product">
                   <strong>{{ order.productName }}</strong>
                   <span>{{ order.variantLabel }} · × {{ order.quantity }}</span>
                   <code>{{ order.orderNo }}</code>
@@ -586,6 +617,32 @@ function statusText(status: string) {
                 <span class="order-status" :class="order.status.toLowerCase()">
                   {{ orderStatusText(order.status) }}
                 </span>
+                <div class="admin-order-delivery">
+                  <small>收货信息</small>
+                  <strong>{{ order.recipientName }} · {{ order.recipientPhone }}</strong>
+                  <span>{{ order.shippingAddress }}</span>
+                  <template v-if="order.status === 'PAID'">
+                    <form class="shipment-form" @submit.prevent="submitShipment(order.orderNo)">
+                      <select v-model="shippingDraft(order.orderNo).carrier" required>
+                        <option>顺丰速运</option>
+                        <option>京东物流</option>
+                        <option>中通快递</option>
+                        <option>圆通速递</option>
+                        <option>邮政 EMS</option>
+                      </select>
+                      <input v-model.trim="shippingDraft(order.orderNo).trackingNo" required maxlength="80" placeholder="输入运单号" :data-testid="`tracking-${order.orderNo}`" />
+                      <button type="submit" :disabled="actionBusy === `ship-${order.orderNo}`" :data-testid="`ship-${order.orderNo}`">
+                        <Activity v-if="actionBusy === `ship-${order.orderNo}`" class="spin" :size="14" />
+                        <Truck v-else :size="14" /> 确认发货
+                      </button>
+                    </form>
+                  </template>
+                  <p v-else-if="order.trackingNo" class="shipment-result">
+                    <Truck :size="14" /> {{ order.carrier }} · {{ order.trackingNo }}
+                    <time>发货于 {{ formatTime(order.shippedAt || order.createdAt) }}</time>
+                  </p>
+                  <p v-else class="shipment-result muted">等待买家支付后安排发货</p>
+                </div>
               </article>
               <div v-if="!filteredOrders.length" class="admin-empty">没有符合筛选条件的订单</div>
             </div>

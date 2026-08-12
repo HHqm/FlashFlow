@@ -60,6 +60,43 @@ public class OrderCommandService {
     }
 
     @Transactional
+    public OrderDtos.OrderView ship(String orderNo, OrderDtos.ShipOrderRequest request) {
+        OrderEntity order = orderRepository.findByOrderNo(orderNo)
+                .orElseThrow(() -> new BusinessException(ErrorCode.ORDER_NOT_FOUND));
+        Instant now = Instant.now();
+        order.ship(request.carrier().trim(), request.trackingNo().trim(), now);
+        outboxService.append(DomainEvent.create(
+                EventTypes.ORDER_SHIPPED,
+                orderNo,
+                Map.of(
+                        "orderNo", orderNo,
+                        "userId", order.getUserId(),
+                        "carrier", order.getCarrier(),
+                        "trackingNo", order.getTrackingNo(),
+                        "shippedAt", now.toString())));
+        return OrderDtos.OrderView.from(order, false);
+    }
+
+    @Transactional
+    public OrderDtos.OrderView receive(long userId, String orderNo) {
+        OrderEntity order = orderRepository.findByOrderNo(orderNo)
+                .orElseThrow(() -> new BusinessException(ErrorCode.ORDER_NOT_FOUND));
+        if (order.getUserId() != userId) {
+            throw new BusinessException(ErrorCode.FORBIDDEN);
+        }
+        Instant now = Instant.now();
+        order.receive(now);
+        outboxService.append(DomainEvent.create(
+                EventTypes.ORDER_RECEIVED,
+                orderNo,
+                Map.of(
+                        "orderNo", orderNo,
+                        "userId", userId,
+                        "receivedAt", now.toString())));
+        return OrderDtos.OrderView.from(order, false);
+    }
+
+    @Transactional
     public Optional<CancelledOrder> cancelIfExpired(String orderNo, Instant cutoff) {
         OrderEntity order = orderRepository.findByOrderNo(orderNo).orElse(null);
         if (order == null || !order.getCreatedAt().isBefore(cutoff)) {

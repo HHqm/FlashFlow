@@ -85,6 +85,36 @@ class OrderCommandServiceTest {
                         assertThat(exception.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
     }
 
+    @Test
+    void adminShipsAndOwnerConfirmsReceipt() {
+        OrderEntity order = orderCreatedMinutesAgo(1);
+        order.pay(Instant.now());
+        when(orderRepository.findByOrderNo(ORDER_NO)).thenReturn(Optional.of(order));
+
+        OrderDtos.OrderView shipped = commandService.ship(
+                ORDER_NO, new OrderDtos.ShipOrderRequest("SF Express", "SF987654321"));
+        OrderDtos.OrderView received = commandService.receive(USER_ID, ORDER_NO);
+
+        assertThat(shipped.status()).isEqualTo(OrderStatus.SHIPPED);
+        assertThat(shipped.trackingNo()).isEqualTo("SF987654321");
+        assertThat(received.status()).isEqualTo(OrderStatus.RECEIVED);
+        verify(outboxService, org.mockito.Mockito.times(2))
+                .append(ArgumentMatchers.any(DomainEvent.class));
+    }
+
+    @Test
+    void anotherUserCannotConfirmReceipt() {
+        OrderEntity order = orderCreatedMinutesAgo(1);
+        order.pay(Instant.now());
+        order.ship("SF Express", "SF987654321", Instant.now());
+        when(orderRepository.findByOrderNo(ORDER_NO)).thenReturn(Optional.of(order));
+
+        assertThatThrownBy(() -> commandService.receive(USER_ID + 1, ORDER_NO))
+                .isInstanceOfSatisfying(BusinessException.class, exception ->
+                        assertThat(exception.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.SHIPPED);
+    }
+
     private static OrderEntity orderCreatedMinutesAgo(int minutes) {
         OrderEntity order = new OrderEntity(
                 ORDER_NO,

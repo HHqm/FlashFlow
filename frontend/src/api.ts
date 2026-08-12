@@ -11,6 +11,8 @@ import type {
   ProductVariant,
   ReturnRequest,
   Review,
+  ShippingAddress,
+  ShippingAddressInput,
   VariantInput,
 } from "./types";
 
@@ -81,6 +83,36 @@ export const listReturns = (token: string) =>
   request<ReturnRequest[]>("/api/v1/returns", {}, token);
 export const listMyReviews = (token: string) =>
   request<Review[]>("/api/v1/reviews", {}, token);
+export const listAddresses = (token: string) =>
+  request<ShippingAddress[]>("/api/v1/addresses", {}, token);
+
+export function createAddress(payload: ShippingAddressInput, token: string) {
+  return request<ShippingAddress>(
+    "/api/v1/addresses",
+    { method: "POST", body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function updateAddress(id: number, payload: ShippingAddressInput, token: string) {
+  return request<ShippingAddress>(
+    `/api/v1/addresses/${id}`,
+    { method: "PUT", body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function setDefaultAddress(id: number, token: string) {
+  return request<ShippingAddress>(
+    `/api/v1/addresses/${id}/default`,
+    { method: "PATCH" },
+    token,
+  );
+}
+
+export function deleteAddress(id: number, token: string) {
+  return request<void>(`/api/v1/addresses/${id}`, { method: "DELETE" }, token);
+}
 
 export function listProductReviews(productId: number): Promise<Review[]> {
   return request<Review[]>(`/api/v1/products/${productId}/reviews`);
@@ -89,6 +121,7 @@ export function listProductReviews(productId: number): Promise<Review[]> {
 export function placeOrder(
   campaignId: number,
   quantity: number,
+  addressId: number,
   idempotencyKey: string,
   token: string,
 ): Promise<Order> {
@@ -97,8 +130,24 @@ export function placeOrder(
     {
       method: "POST",
       headers: { "Idempotency-Key": idempotencyKey },
-      body: JSON.stringify({ quantity }),
+      body: JSON.stringify({ quantity, addressId }),
     },
+    token,
+  );
+}
+
+export function receiveOrder(orderNo: string, token: string): Promise<Order> {
+  return request<Order>(
+    `/api/v1/orders/${encodeURIComponent(orderNo)}/receive`,
+    { method: "POST" },
+    token,
+  );
+}
+
+export function shipOrder(orderNo: string, carrier: string, trackingNo: string, token: string) {
+  return request<Order>(
+    `/api/v1/admin/orders/${encodeURIComponent(orderNo)}/ship`,
+    { method: "POST", body: JSON.stringify({ carrier, trackingNo }) },
     token,
   );
 }

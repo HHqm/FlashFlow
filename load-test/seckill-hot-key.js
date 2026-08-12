@@ -27,10 +27,11 @@ export const options = {
 const baseUrl = __ENV.BASE_URL || "http://localhost:8080";
 const campaignId = __ENV.CAMPAIGN_ID;
 const token = __ENV.TOKEN;
+const addressId = Number(__ENV.ADDRESS_ID || 1);
 
 export function setup() {
-  if (!campaignId || !token) {
-    throw new Error("Set CAMPAIGN_ID and TOKEN before running k6.");
+  if (!campaignId || !token || !addressId) {
+    throw new Error("Set CAMPAIGN_ID, TOKEN and ADDRESS_ID before running k6.");
   }
 }
 
@@ -38,10 +39,11 @@ export default function () {
   const idempotencyKey = `${__VU}_${__ITER}_${Date.now()}`;
   const response = http.post(
     `${baseUrl}/api/v1/campaigns/${campaignId}/orders`,
-    null,
+    JSON.stringify({ quantity: 1, addressId }),
     {
       headers: {
         Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
         "Idempotency-Key": idempotencyKey,
       },
       tags: { name: "place_order" },

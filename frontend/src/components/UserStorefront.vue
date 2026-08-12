@@ -11,8 +11,10 @@ import {
   HeartPulse,
   Home,
   LogOut,
+  MapPin,
   Minus,
   PackageCheck,
+  PackageOpen,
   Plus,
   Radio,
   RefreshCw,
@@ -23,6 +25,8 @@ import {
   Sparkles,
   Star,
   TimerReset,
+  Trash2,
+  Truck,
   UserRound,
   Watch,
   Zap,
@@ -37,6 +41,8 @@ import type {
   Review,
   ServiceHealth,
   Session,
+  ShippingAddress,
+  ShippingAddressInput,
 } from "../types";
 
 const props = defineProps<{
@@ -48,6 +54,7 @@ const props = defineProps<{
   returns: ReturnRequest[];
   reviews: Review[];
   notifications: Notification[];
+  addresses: ShippingAddress[];
   services: ServiceHealth[];
   loading: boolean;
   actionBusy: string;
@@ -58,11 +65,16 @@ const props = defineProps<{
 const emit = defineEmits<{
   logout: [];
   refresh: [];
-  placeOrder: [campaignId: number, quantity: number];
+  placeOrder: [campaignId: number, quantity: number, addressId: number];
   pay: [orderNo: string];
   cancel: [orderNo: string, reason: string];
   requestReturn: [orderNo: string, reason: string];
   review: [orderNo: string, rating: number, content: string];
+  createAddress: [payload: ShippingAddressInput];
+  updateAddress: [id: number, payload: ShippingAddressInput];
+  setDefaultAddress: [id: number];
+  deleteAddress: [id: number];
+  receive: [orderNo: string];
 }>();
 
 const selectedCategory = ref(0);
@@ -73,6 +85,19 @@ const orderAction = ref<{ type: "cancel" | "return" | "review"; order: Order } |
 const actionReason = ref("");
 const reviewRating = ref(5);
 const reviewContent = ref("");
+const checkoutCampaign = ref<Campaign | null>(null);
+const checkoutAddressId = ref(0);
+const editingAddressId = ref<number | null>(null);
+const addressForm = reactive<ShippingAddressInput>({
+  recipientName: "",
+  phone: "",
+  province: "",
+  city: "",
+  district: "",
+  detailAddress: "",
+  postalCode: "",
+  defaultAddress: false,
+});
 const now = ref(Date.now());
 let timer: number | undefined;
 
@@ -109,7 +134,9 @@ const filteredCampaigns = computed(() => {
   });
 });
 
-const paidOrders = computed(() => props.orders.filter((order) => order.status === "PAID").length);
+const paidOrders = computed(() =>
+  props.orders.filter((order) => ["PAID", "SHIPPED", "RECEIVED"].includes(order.status)).length,
+);
 const totalRemaining = computed(() =>
   props.campaigns.reduce((sum, campaign) => sum + campaign.remainingStock, 0),
 );
@@ -181,6 +208,8 @@ function statusText(status: string) {
     {
       PENDING_PAYMENT: "待支付",
       PAID: "已支付",
+      SHIPPED: "已发货",
+      RECEIVED: "已收货",
       REFUND_REQUESTED: "退款审核中",
       REFUNDED: "已退款",
       CANCELLED: "已关闭",
@@ -198,6 +227,63 @@ function reviewFor(orderNo: string) {
 
 function returnFor(orderNo: string) {
   return props.returns.find((item) => item.orderNo === orderNo);
+}
+
+function fullAddress(address: ShippingAddress) {
+  return `${address.province}${address.city}${address.district}${address.detailAddress}`;
+}
+
+function openCheckout(campaign: Campaign) {
+  checkoutCampaign.value = campaign;
+  checkoutAddressId.value =
+    props.addresses.find((address) => address.defaultAddress)?.id ?? props.addresses[0]?.id ?? 0;
+}
+
+function confirmCheckout() {
+  if (!checkoutCampaign.value || !checkoutAddressId.value) return;
+  emit(
+    "placeOrder",
+    checkoutCampaign.value.id,
+    quantity(checkoutCampaign.value),
+    checkoutAddressId.value,
+  );
+  checkoutCampaign.value = null;
+}
+
+function submitAddress() {
+  const payload = {
+    ...addressForm,
+    defaultAddress: addressForm.defaultAddress || props.addresses.length === 0,
+  };
+  if (editingAddressId.value) {
+    emit("updateAddress", editingAddressId.value, payload);
+  } else {
+    emit("createAddress", payload);
+  }
+  resetAddressForm();
+}
+
+function editAddress(address: ShippingAddress) {
+  editingAddressId.value = address.id;
+  Object.assign(addressForm, {
+    recipientName: address.recipientName,
+    phone: address.phone,
+    province: address.province,
+    city: address.city,
+    district: address.district,
+    detailAddress: address.detailAddress,
+    postalCode: address.postalCode || "",
+    defaultAddress: address.defaultAddress,
+  });
+  document.querySelector("#addresses")?.scrollIntoView({ behavior: "smooth" });
+}
+
+function resetAddressForm() {
+  editingAddressId.value = null;
+  Object.assign(addressForm, {
+    recipientName: "", phone: "", province: "", city: "", district: "",
+    detailAddress: "", postalCode: "", defaultAddress: false,
+  });
 }
 
 function openOrderAction(type: "cancel" | "return" | "review", order: Order) {
@@ -232,6 +318,8 @@ function notificationTitle(code: string) {
     ORDER_REFUND_REQUESTED: "退款已申请",
     ORDER_REFUNDED: "退款已通过",
     ORDER_REFUND_REJECTED: "退款未通过",
+    ORDER_SHIPPED: "订单已发货",
+    ORDER_RECEIVED: "订单已收货",
   }[code] ?? "订单消息");
 }
 </script>
@@ -247,6 +335,7 @@ function notificationTitle(code: string) {
       <nav>
         <a href="#home">首页</a>
         <a href="#flash-sale">限时秒杀</a>
+        <a href="#addresses">收货地址</a>
         <a href="#orders">我的订单</a>
       </nav>
       <div class="header-search">
@@ -394,7 +483,7 @@ function notificationTitle(code: string) {
                     campaign.remainingStock < 1
                   "
                   :data-testid="`buy-${campaign.id}`"
-                  @click="emit('placeOrder', campaign.id, quantity(campaign))"
+                  @click="openCheckout(campaign)"
                 >
                   <Activity v-if="actionBusy === `order-${campaign.id}`" class="spin" :size="17" />
                   <Zap v-else :size="17" fill="currentColor" />
@@ -409,6 +498,70 @@ function notificationTitle(code: string) {
           <Search :size="32" />
           <strong>没有找到符合条件的秒杀商品</strong>
           <button type="button" @click="selectedCategory = 0; keyword = ''">查看全部商品</button>
+        </div>
+      </section>
+
+      <section id="addresses" class="address-section">
+        <div class="store-section-heading compact">
+          <div>
+            <p>DELIVERY PROFILE</p>
+            <h2><MapPin :size="23" /> 收货地址</h2>
+            <span>订单会保存地址快照，后续修改地址不会影响历史订单</span>
+          </div>
+          <span class="order-count">{{ addresses.length }} 个地址</span>
+        </div>
+        <div class="address-layout">
+          <form class="address-form" data-testid="address-form" @submit.prevent="submitAddress">
+            <div class="address-form-title">
+              <span><MapPin :size="18" /></span>
+              <div><strong>{{ editingAddressId ? "编辑收货地址" : "新增收货地址" }}</strong><small>请填写真实有效的收货信息</small></div>
+            </div>
+            <div class="address-form-grid two">
+              <label><span>收货人</span><input v-model.trim="addressForm.recipientName" required maxlength="80" placeholder="姓名" data-testid="address-recipient" /></label>
+              <label><span>手机号</span><input v-model.trim="addressForm.phone" required maxlength="32" pattern="[0-9+ -]{7,32}" placeholder="13800000000" /></label>
+            </div>
+            <div class="address-form-grid three">
+              <label><span>省份</span><input v-model.trim="addressForm.province" required maxlength="80" placeholder="上海市" /></label>
+              <label><span>城市</span><input v-model.trim="addressForm.city" required maxlength="80" placeholder="上海市" /></label>
+              <label><span>区县</span><input v-model.trim="addressForm.district" required maxlength="80" placeholder="浦东新区" /></label>
+            </div>
+            <div class="address-form-grid detail-postal">
+              <label><span>详细地址</span><input v-model.trim="addressForm.detailAddress" required maxlength="240" placeholder="街道、门牌号、小区和楼栋" /></label>
+              <label><span>邮政编码</span><input v-model.trim="addressForm.postalCode" maxlength="20" placeholder="可选" /></label>
+            </div>
+            <div class="address-form-footer">
+              <label class="default-check"><input v-model="addressForm.defaultAddress" type="checkbox" /> 设为默认地址</label>
+              <span class="address-form-actions">
+                <button v-if="editingAddressId" class="secondary" type="button" @click="resetAddressForm">取消编辑</button>
+                <button type="submit" :disabled="actionBusy === 'address-create' || actionBusy === `address-update-${editingAddressId}`">
+                  <Activity v-if="actionBusy.startsWith('address-')" class="spin" :size="16" />
+                  <Plus v-else :size="16" /> {{ editingAddressId ? "保存修改" : "保存地址" }}
+                </button>
+              </span>
+            </div>
+          </form>
+
+          <div class="address-book">
+            <article v-for="address in addresses" :key="address.id" class="address-card" :class="{ default: address.defaultAddress }">
+              <div class="address-card-head">
+                <span><MapPin :size="17" /></span>
+                <strong>{{ address.recipientName }}</strong>
+                <b v-if="address.defaultAddress">默认</b>
+              </div>
+              <p>{{ fullAddress(address) }}</p>
+              <small>{{ address.phone }}<template v-if="address.postalCode"> · {{ address.postalCode }}</template></small>
+              <div>
+                <button v-if="!address.defaultAddress" type="button" @click="emit('setDefaultAddress', address.id)">设为默认</button>
+                <button type="button" @click="editAddress(address)">编辑</button>
+                <button class="danger" type="button" :disabled="actionBusy === `address-delete-${address.id}`" @click="emit('deleteAddress', address.id)">
+                  <Trash2 :size="14" /> 删除
+                </button>
+              </div>
+            </article>
+            <div v-if="!addresses.length" class="address-empty">
+              <MapPin :size="28" /><strong>还没有收货地址</strong><span>先添加地址，再参与商品抢购。</span>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -429,6 +582,8 @@ function notificationTitle(code: string) {
                 <strong>{{ order.productName || "秒杀商品" }}</strong>
                 <span>{{ order.variantLabel || `商品 #${order.productId}` }} · × {{ order.quantity }}</span>
                 <code :title="order.orderNo">{{ shortOrderNo(order.orderNo) }}</code>
+                <small class="order-address"><MapPin :size="12" /> {{ order.recipientName }} · {{ order.shippingAddress }}</small>
+                <small v-if="order.trackingNo" class="order-tracking"><Truck :size="12" /> {{ order.carrier }} · {{ order.trackingNo }}</small>
               </div>
               <div class="order-time"><Clock3 :size="14" /> {{ formatTime(order.createdAt) }}</div>
               <strong class="order-amount">{{ money(order.amount) }}</strong>
@@ -454,7 +609,7 @@ function notificationTitle(code: string) {
                   取消
                 </button>
                 <button
-                  v-if="order.status === 'PAID' && !reviewFor(order.orderNo)"
+                  v-if="order.status === 'RECEIVED' && !reviewFor(order.orderNo)"
                   class="order-secondary"
                   type="button"
                   @click="openOrderAction('review', order)"
@@ -462,7 +617,16 @@ function notificationTitle(code: string) {
                   <Star :size="14" /> 评价
                 </button>
                 <button
-                  v-if="order.status === 'PAID' && !returnFor(order.orderNo)"
+                  v-if="order.status === 'SHIPPED'"
+                  class="pay-button receive-button"
+                  type="button"
+                  :disabled="actionBusy === `receive-${order.orderNo}`"
+                  @click="emit('receive', order.orderNo)"
+                >
+                  <PackageOpen :size="15" /> 确认收货
+                </button>
+                <button
+                  v-if="['PAID', 'SHIPPED', 'RECEIVED'].includes(order.status) && !returnFor(order.orderNo)"
                   class="order-secondary danger"
                   type="button"
                   @click="openOrderAction('return', order)"
@@ -505,6 +669,8 @@ function notificationTitle(code: string) {
             <article v-for="item in notifications.slice(0, 6)" :key="item.id">
               <span :class="{ paid: item.templateCode === 'ORDER_PAID' }">
                 <CreditCard v-if="item.templateCode === 'ORDER_PAID'" :size="16" />
+                <Truck v-else-if="item.templateCode === 'ORDER_SHIPPED'" :size="16" />
+                <PackageOpen v-else-if="item.templateCode === 'ORDER_RECEIVED'" :size="16" />
                 <Bell v-else :size="16" />
               </span>
               <div>
@@ -523,6 +689,37 @@ function notificationTitle(code: string) {
         </aside>
       </section>
     </main>
+
+    <div v-if="checkoutCampaign" class="commerce-modal-backdrop" @click.self="checkoutCampaign = null">
+      <form class="commerce-modal checkout-modal" data-testid="checkout-dialog" @submit.prevent="confirmCheckout">
+        <div class="modal-heading">
+          <div><small>ORDER CONFIRMATION</small><h3>确认订单与收货地址</h3></div>
+          <button type="button" aria-label="关闭" @click="checkoutCampaign = null">×</button>
+        </div>
+        <div class="modal-order-summary">
+          <strong>{{ checkoutCampaign.productName }}</strong>
+          <span>{{ checkoutCampaign.colorName }} · {{ checkoutCampaign.specification }} · × {{ quantity(checkoutCampaign) }}</span>
+          <b>{{ money(checkoutCampaign.flashPrice * quantity(checkoutCampaign)) }}</b>
+        </div>
+        <div v-if="addresses.length" class="checkout-addresses">
+          <label v-for="address in addresses" :key="address.id" :class="{ selected: checkoutAddressId === address.id }">
+            <input v-model.number="checkoutAddressId" type="radio" name="checkout-address" :value="address.id" />
+            <span><strong>{{ address.recipientName }} · {{ address.phone }}</strong><small>{{ fullAddress(address) }}</small></span>
+            <b v-if="address.defaultAddress">默认</b>
+          </label>
+        </div>
+        <div v-else class="checkout-address-empty">
+          <MapPin :size="28" /><strong>请先添加收货地址</strong><span>关闭窗口后可在“收货地址”区域新增。</span>
+        </div>
+        <p class="modal-tip">提交时会执行 Redis 原子库存预扣，订单创建后请在 15 分钟内支付。</p>
+        <div class="modal-actions">
+          <button type="button" @click="checkoutCampaign = null">继续选购</button>
+          <button class="primary" type="submit" :disabled="!checkoutAddressId || actionBusy === `order-${checkoutCampaign.id}`">
+            <Zap :size="16" /> 提交秒杀订单
+          </button>
+        </div>
+      </form>
+    </div>
 
     <div v-if="orderAction" class="commerce-modal-backdrop" @click.self="orderAction = null">
       <form class="commerce-modal" data-testid="order-action-dialog" @submit.prevent="submitOrderAction">

@@ -8,6 +8,7 @@ import {
   ApiError,
   addVariant,
   cancelOrder,
+  createAddress,
   createCampaign,
   createCategory,
   createProduct,
@@ -20,6 +21,7 @@ import {
   listAdminProducts,
   listAdminReturns,
   listAdminReviews,
+  listAddresses,
   listCampaigns,
   listCategories,
   listMyReviews,
@@ -31,6 +33,7 @@ import {
   payOrder,
   placeOrder,
   replyReview,
+  receiveOrder,
   requestReturn,
   setCampaignStatus,
   setCategoryStatus,
@@ -39,6 +42,10 @@ import {
   setVariantPrice,
   setVariantStatus,
   setVariantStock,
+  setDefaultAddress,
+  deleteAddress,
+  shipOrder,
+  updateAddress,
   warmupCampaign,
 } from "./api";
 import type {
@@ -51,6 +58,8 @@ import type {
   ProductInput,
   ReturnRequest,
   Review,
+  ShippingAddress,
+  ShippingAddressInput,
   ServiceHealth,
   Session,
   ToastState,
@@ -66,6 +75,7 @@ const orders = ref<Order[]>([]);
 const returns = ref<ReturnRequest[]>([]);
 const reviews = ref<Review[]>([]);
 const notifications = ref<Notification[]>([]);
+const addresses = ref<ShippingAddress[]>([]);
 const services = reactive<ServiceHealth[]>([
   { key: "gateway", name: "Gateway", status: "CHECKING" },
   { key: "trade", name: "Trade", status: "CHECKING" },
@@ -150,7 +160,7 @@ async function refreshData() {
     reviews.value = reviewData;
     notifications.value = [];
   } else {
-    const [categoryData, productData, campaignData, orderData, returnData, reviewData, notificationData] =
+    const [categoryData, productData, campaignData, orderData, returnData, reviewData, notificationData, addressData] =
       await Promise.all([
         listCategories(),
         listProducts(),
@@ -159,6 +169,7 @@ async function refreshData() {
         listReturns(session.value.accessToken),
         listMyReviews(session.value.accessToken),
         listNotifications(session.value.userId),
+        listAddresses(session.value.accessToken),
       ]);
     categories.value = categoryData;
     products.value = productData;
@@ -167,6 +178,7 @@ async function refreshData() {
     returns.value = returnData;
     reviews.value = reviewData;
     notifications.value = notificationData;
+    addresses.value = addressData;
   }
 }
 
@@ -218,6 +230,7 @@ function handleLogout() {
   returns.value = [];
   reviews.value = [];
   notifications.value = [];
+  addresses.value = [];
   stopPolling();
 }
 
@@ -236,13 +249,38 @@ async function runAction(key: string, successMessage: string, task: () => Promis
   }
 }
 
-async function handlePlaceOrder(campaignId: number, quantity: number) {
+async function handlePlaceOrder(campaignId: number, quantity: number, addressId: number) {
   if (!session.value || session.value.role !== "USER") return;
   await runAction(`order-${campaignId}`, "秒杀订单创建成功，请在订单中心完成支付。", async () => {
     const key = `web-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
-    await placeOrder(campaignId, quantity, key, session.value!.accessToken);
+    await placeOrder(campaignId, quantity, addressId, key, session.value!.accessToken);
     window.setTimeout(() => refreshData().catch(() => undefined), 1200);
   }).catch(() => undefined);
+}
+
+async function handleCreateAddress(payload: ShippingAddressInput) {
+  await runAction("address-create", "收货地址已保存。", () =>
+    createAddress(payload, token())).catch(() => undefined);
+}
+
+async function handleUpdateAddress(id: number, payload: ShippingAddressInput) {
+  await runAction(`address-update-${id}`, "收货地址已更新。", () =>
+    updateAddress(id, payload, token())).catch(() => undefined);
+}
+
+async function handleDefaultAddress(id: number) {
+  await runAction(`address-default-${id}`, "默认地址已更新。", () =>
+    setDefaultAddress(id, token())).catch(() => undefined);
+}
+
+async function handleDeleteAddress(id: number) {
+  await runAction(`address-delete-${id}`, "收货地址已删除。", () =>
+    deleteAddress(id, token())).catch(() => undefined);
+}
+
+async function handleReceive(orderNo: string) {
+  await runAction(`receive-${orderNo}`, "已确认收货，现在可以评价商品。", () =>
+    receiveOrder(orderNo, token())).catch(() => undefined);
 }
 
 async function handlePay(orderNo: string) {
@@ -322,6 +360,9 @@ const adminActions = {
   replyReview: (id: number, reply: string) =>
     runAction(`review-reply-${id}`, "商家回复已保存。", () =>
       replyReview(id, reply, token())),
+  shipOrder: (orderNo: string, carrier: string, trackingNo: string) =>
+    runAction(`ship-${orderNo}`, "订单已发货，买家将收到履约通知。", () =>
+      shipOrder(orderNo, carrier, trackingNo, token())),
 };
 
 function startPolling() {
@@ -384,6 +425,7 @@ onBeforeUnmount(() => {
     @decide-return="adminActions.decideReturn"
     @set-review-visibility="adminActions.setReviewVisibility"
     @reply-review="adminActions.replyReview"
+    @ship-order="adminActions.shipOrder"
   />
 
   <UserStorefront
@@ -396,6 +438,7 @@ onBeforeUnmount(() => {
     :returns="returns"
     :reviews="reviews"
     :notifications="notifications"
+    :addresses="addresses"
     :services="services"
     :loading="loading"
     :action-busy="actionBusy"
@@ -408,6 +451,11 @@ onBeforeUnmount(() => {
     @cancel="handleCancel"
     @request-return="handleReturn"
     @review="handleReview"
+    @create-address="handleCreateAddress"
+    @update-address="handleUpdateAddress"
+    @set-default-address="handleDefaultAddress"
+    @delete-address="handleDeleteAddress"
+    @receive="handleReceive"
   />
 
   <Transition name="toast">

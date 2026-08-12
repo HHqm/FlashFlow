@@ -1,5 +1,8 @@
 package com.flashflow.trade.outbox;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import com.flashflow.common.event.DomainEvent;
 import com.flashflow.trade.common.BusinessException;
 import com.flashflow.trade.common.ErrorCode;
@@ -19,13 +22,21 @@ public class OutboxService {
     }
 
     public void append(DomainEvent event) {
+        appendAll(List.of(event));
+    }
+
+    public void appendAll(List<DomainEvent> events) {
         try {
-            outboxRepository.save(new OutboxEntity(
-                    event.eventId(),
-                    event.eventType(),
-                    event.aggregateId(),
-                    objectMapper.writeValueAsString(event),
-                    event.occurredAt()));
+            List<OutboxEntity> entities = new ArrayList<>(events.size());
+            for (DomainEvent event : events) {
+                entities.add(new OutboxEntity(
+                        event.eventId(),
+                        event.eventType(),
+                        event.aggregateId(),
+                        objectMapper.writeValueAsString(event),
+                        event.occurredAt()));
+            }
+            outboxRepository.saveAll(entities);
         } catch (JacksonException exception) {
             throw new BusinessException(ErrorCode.INTERNAL_ERROR, "领域事件序列化失败");
         }

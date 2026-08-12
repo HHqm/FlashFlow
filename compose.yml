@@ -79,7 +79,7 @@ services:
       context: .
       dockerfile: trade-service/Dockerfile
     environment:
-      MYSQL_URL: jdbc:mysql://mysql:3306/flashflow_trade?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&rewriteBatchedStatements=true
+      MYSQL_URL: jdbc:mysql://mysql:3306/flashflow_trade?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&rewriteBatchedStatements=true&cachePrepStmts=true&prepStmtCacheSize=250&prepStmtCacheSqlLimit=2048&useServerPrepStmts=true
       MYSQL_USER: flashflow
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-flashflow_app}
       REDIS_HOST: redis
@@ -95,6 +95,12 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8081/actuator/health >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
     restart: unless-stopped
     networks: [flashflow]
 
@@ -114,6 +120,12 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8082/actuator/health >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
     restart: unless-stopped
     networks: [flashflow]
 
@@ -132,7 +144,14 @@ services:
       redis:
         condition: service_healthy
       trade-service:
-        condition: service_started
+        condition: service_healthy
+        restart: true
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8080/actuator/health >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
     restart: unless-stopped
     networks: [flashflow]
 
@@ -144,9 +163,11 @@ services:
       - "3000:80"
     depends_on:
       gateway-service:
-        condition: service_started
+        condition: service_healthy
+        restart: true
       notification-service:
-        condition: service_started
+        condition: service_healthy
+        restart: true
     restart: unless-stopped
     networks: [flashflow]
 

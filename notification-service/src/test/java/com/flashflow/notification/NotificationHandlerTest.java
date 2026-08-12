@@ -83,4 +83,29 @@ class NotificationHandlerTest {
         verify(notificationRepository, never()).save(
                 org.mockito.ArgumentMatchers.any(NotificationEntity.class));
     }
+
+    @Test
+    void createsShipmentNotificationWithTrackingInformation() {
+        DomainEvent event = DomainEvent.create(
+                EventTypes.ORDER_SHIPPED,
+                "FF-102",
+                Map.of(
+                        "orderNo", "FF-102",
+                        "userId", 42L,
+                        "carrier", "SF Express",
+                        "trackingNo", "SF123456"));
+        when(processedMessageRepository.insertIfAbsent(
+                org.mockito.ArgumentMatchers.eq(event.eventId()),
+                org.mockito.ArgumentMatchers.eq(event.eventType()),
+                org.mockito.ArgumentMatchers.any()))
+                .thenReturn(1);
+
+        handler.handle(event);
+
+        var captor = ArgumentCaptor.forClass(NotificationEntity.class);
+        verify(notificationRepository).save(captor.capture());
+        assertThat(captor.getValue().getTemplateCode()).isEqualTo("ORDER_SHIPPED");
+        assertThat(captor.getValue().getContent())
+                .contains("FF-102", "SF Express", "SF123456");
+    }
 }

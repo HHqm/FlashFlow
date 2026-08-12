@@ -1,4 +1,6 @@
 **/target/
+**/node_modules/
+**/dist/
 .idea/
 .vscode/
 *.iml
@@ -7,4 +9,5 @@
 .DS_Store
 Thumbs.db
 data/
+load-test/results/
 !.mvn/wrapper/maven-wrapper.jar

@@ -1,0 +1,9 @@
+services:
+  gateway-service:
+    environment:
+      GATEWAY_RATE_PER_SECOND: 5000
+      GATEWAY_BURST_CAPACITY: 10000
+  trade-service:
+    environment:
+      SECKILL_REQUESTS_PER_SECOND: 5000
+      ORDER_TIMEOUT_JOB_ENABLED: "false"

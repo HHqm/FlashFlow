@@ -86,6 +86,8 @@ export interface Order {
   status:
     | "PENDING_PAYMENT"
     | "PAID"
+    | "SHIPPED"
+    | "RECEIVED"
     | "REFUND_REQUESTED"
     | "REFUNDED"
     | "CANCELLED"
@@ -95,7 +97,37 @@ export interface Order {
   cancelledAt: string | null;
   cancelReason: string | null;
   refundedAt: string | null;
+  recipientName: string;
+  recipientPhone: string;
+  shippingAddress: string;
+  carrier: string | null;
+  trackingNo: string | null;
+  shippedAt: string | null;
+  receivedAt: string | null;
   replayed: boolean;
+}
+
+export interface ShippingAddress {
+  id: number;
+  recipientName: string;
+  phone: string;
+  province: string;
+  city: string;
+  district: string;
+  detailAddress: string;
+  postalCode: string | null;
+  defaultAddress: boolean;
+}
+
+export interface ShippingAddressInput {
+  recipientName: string;
+  phone: string;
+  province: string;
+  city: string;
+  district: string;
+  detailAddress: string;
+  postalCode: string;
+  defaultAddress: boolean;
 }
 
 export interface ReturnRequest {

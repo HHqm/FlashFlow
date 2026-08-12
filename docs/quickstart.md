@@ -61,8 +61,8 @@ docker compose ps
 
 | 账号 | 密码 | 用途 |
 | --- | --- | --- |
-| `demo` | `Demo@123456` | 浏览、搜索、秒杀、支付、退款、评价 |
-| `admin` | `Admin@123456` | 商品、SKU、价格、活动、订单、售后和评价运营 |
+| `demo` | `Demo@123456` | 浏览、搜索、地址、秒杀、支付、收货、退款、评价 |
+| `admin` | `Admin@123456` | 商品、SKU、价格、活动、发货、售后和评价运营 |
 
 管理员账号只拥有运营权限，不能创建订单或支付。
 
@@ -72,17 +72,18 @@ docker compose ps
 
 1. 使用 `demo` 登录。
 2. 在搜索框输入商品名称、颜色或规格，例如 `Watch`、`Pro`。
-3. 在秒杀卡片中调整数量并点击“立即抢购”。
-4. 在“我的订单”中点击支付。
-5. 待支付订单可以取消；已支付订单可以申请退款。
-6. 已支付订单可以提交 1～5 星评价，评价会显示在商品评分中。
+3. 在“收货地址”中新增、编辑或选择默认地址。
+4. 在秒杀卡片中调整数量，点击“立即抢购”并确认本单地址。
+5. 在“我的订单”中点击支付；待支付订单可以主动取消。
+6. 管理员发货后，用户可查看承运商和运单号并确认收货。
+7. 已支付、已发货或已收货订单可以申请退款；确认收货后可以提交评价。
 
 ### 管理端
 
 1. 退出用户账号，使用 `admin` 登录。
 2. 在“商品与 SKU”中创建商品、增加颜色/规格 SKU、修改售价和库存、上下架。
 3. 在“秒杀活动”中配置活动价、活动库存、限购数量和活动时间。
-4. 在“订单与售后”中查看订单，审批或驳回退款申请。
+4. 在“订单与售后”中为已支付订单录入承运商和运单号，并审批或驳回退款申请。
 5. 在“商品评价”中查看已购评价、隐藏/恢复评价并回复买家。
 
 ## 7. API 流程示例（PowerShell）
@@ -97,10 +98,13 @@ $headers = @{ Authorization = "Bearer $token"; "Idempotency-Key" = [guid]::NewGu
 
 $campaigns = Invoke-RestMethod "http://localhost:8080/api/v1/campaigns?keyword=Watch"
 $campaignId = $campaigns.data[0].id
+$addresses = Invoke-RestMethod -Uri "http://localhost:8080/api/v1/addresses" `
+  -Headers @{ Authorization = "Bearer $token" }
+$addressId = $addresses.data[0].id
 $order = Invoke-RestMethod -Method Post `
   -Uri "http://localhost:8080/api/v1/campaigns/$campaignId/orders" `
   -Headers $headers -ContentType "application/json" `
-  -Body (@{ quantity = 1 } | ConvertTo-Json)
+  -Body (@{ quantity = 1; addressId = $addressId } | ConvertTo-Json)
 $orderNo = $order.data.orderNo
 
 Invoke-RestMethod -Method Post `
