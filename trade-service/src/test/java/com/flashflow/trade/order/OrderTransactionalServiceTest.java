@@ -12,7 +12,7 @@ import java.time.Instant;
 import java.util.List;
 
 import com.flashflow.trade.address.ShippingAddressSnapshot;
-import com.flashflow.trade.campaign.CampaignRepository;
+import com.flashflow.trade.campaign.CampaignStockRepository;
 import com.flashflow.trade.campaign.CampaignStatus;
 import com.flashflow.trade.common.BusinessException;
 import com.flashflow.trade.common.ErrorCode;
@@ -31,7 +31,7 @@ class OrderTransactionalServiceTest {
             21L, "Test User", "13800000000", "Shanghai Pudong Test Road 1");
 
     @Mock
-    private CampaignRepository campaignRepository;
+    private CampaignStockRepository stockRepository;
 
     @Mock
     private OrderRepository orderRepository;
@@ -44,7 +44,7 @@ class OrderTransactionalServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new OrderTransactionalService(campaignRepository, orderRepository, outboxService);
+        service = new OrderTransactionalService(stockRepository, orderRepository, outboxService);
         campaign = new OrderCampaignContext(
                 10L,
                 new BigDecimal("99.00"),
@@ -57,21 +57,21 @@ class OrderTransactionalServiceTest {
 
     @Test
     void acquiresInventoryBeforeWritingOrderToKeepForeignKeyLockOrderStable() {
-        when(campaignRepository.decrementStock(10L, 1)).thenReturn(1);
+        when(stockRepository.decrement(10L, 0, 1)).thenReturn(1);
         when(orderRepository.saveAll(anyList()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
         service.persistReservedOrder(7L, campaign, "request_12345678", "FF123", campaign.productSnapshot());
 
-        InOrder sequence = inOrder(orderRepository, outboxService, campaignRepository);
-        sequence.verify(campaignRepository).decrementStock(10L, 1);
+        InOrder sequence = inOrder(orderRepository, outboxService, stockRepository);
+        sequence.verify(stockRepository).decrement(10L, 0, 1);
         sequence.verify(orderRepository).saveAll(anyList());
         sequence.verify(outboxService).appendAll(anyList());
     }
 
     @Test
     void rejectsOrderWhenDatabaseInventoryCannotBeReserved() {
-        when(campaignRepository.decrementStock(10L, 1)).thenReturn(0);
+        when(stockRepository.decrement(10L, 0, 1)).thenReturn(0);
 
         assertThatThrownBy(() -> service.persistReservedOrder(
                 7L, campaign, "request_12345678", "FF123", campaign.productSnapshot()))
@@ -82,7 +82,7 @@ class OrderTransactionalServiceTest {
 
     @Test
     void combinesInventoryDeductionForOrdersInTheSameBatch() {
-        when(campaignRepository.decrementStock(10L, 3)).thenReturn(1);
+        when(stockRepository.decrement(10L, 0, 3)).thenReturn(1);
         when(orderRepository.saveAll(anyList()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
         List<OrderWriteCommand> commands = List.of(
@@ -96,7 +96,7 @@ class OrderTransactionalServiceTest {
         List<OrderEntity> orders = service.persistReservedOrders(commands);
 
         org.assertj.core.api.Assertions.assertThat(orders).hasSize(2);
-        verify(campaignRepository).decrementStock(10L, 3);
+        verify(stockRepository).decrement(10L, 0, 3);
         verify(orderRepository).saveAll(anyList());
         verify(outboxService).appendAll(anyList());
     }

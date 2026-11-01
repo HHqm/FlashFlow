@@ -201,7 +201,7 @@ class StockReconciliationServiceTest {
                 Instant.now().plus(1, ChronoUnit.HOURS));
         set(entity, "id", CAMPAIGN_ID);
         set(entity, "remainingStock", remainingStock);
-        set(entity, "version", version);
+        set(entity, "stockVersion", version);
         return entity;
     }
 

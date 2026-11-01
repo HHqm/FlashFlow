@@ -66,7 +66,8 @@ public class OrderCampaignContextService {
                     campaign.getStartsAt(),
                     campaign.getEndsAt(),
                     campaign.getStatus(),
-                    productSnapshotService.resolve(campaign));
+                    productSnapshotService.resolve(campaign),
+                    campaign.getStockBuckets());
             cache.put(campaignId, new CacheEntry(context, loadTime.plus(cacheTtl)));
             return context;
         } finally {

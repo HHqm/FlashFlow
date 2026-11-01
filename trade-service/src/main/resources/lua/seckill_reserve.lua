@@ -1,3 +1,14 @@
+-- KEYS: 1 stock, 2 buyer purchased count, 3 idempotency key -> order number, 4 per-second rate counter
+-- ARGV: 1 order number, 2 TTL seconds, 3 quantity, 4 purchase limit, 5 requests per second
+-- Rate limiting lives here so an order costs one Redis round trip instead of two.
+local attempts = redis.call('INCR', KEYS[4])
+if attempts == 1 then
+    redis.call('EXPIRE', KEYS[4], 2)
+end
+if attempts > tonumber(ARGV[5]) then
+    return 'RATE_LIMITED'
+end
+
 local existing_order = redis.call('GET', KEYS[3])
 if existing_order then
     return 'DUPLICATE|' .. existing_order

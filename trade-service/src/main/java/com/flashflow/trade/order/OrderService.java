@@ -67,8 +67,6 @@ public class OrderService {
                     ErrorCode.PURCHASE_LIMIT_EXCEEDED,
                     "本活动每人限购 " + campaign.purchaseLimit() + " 件");
         }
-        seckillRedisRepository.checkRateLimit(userId);
-
         String orderNo = orderNumberGenerator.next();
         ReservationResult reservation = seckillRedisRepository.reserve(
                 campaignId,

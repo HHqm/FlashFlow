@@ -12,6 +12,7 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
+import org.hibernate.annotations.Formula;
 
 @Entity
 @Table(name = "flash_campaign")
@@ -33,8 +34,16 @@ public class CampaignEntity {
     @Column(name = "total_stock", nullable = false)
     private int totalStock;
 
-    @Column(name = "remaining_stock", nullable = false)
+    @Column(name = "stock_buckets", nullable = false)
+    private int stockBuckets;
+
+    // Stock lives in campaign_stock_bucket rows; these are read-only aggregates loaded with the row.
+    @Formula("(select coalesce(sum(b.remaining_stock), 0) from campaign_stock_bucket b where b.campaign_id = id)")
     private int remainingStock;
+
+    // Changes whenever any bucket changes, so reconciliation can tell "nothing was committed".
+    @Formula("(select coalesce(sum(b.version), 0) from campaign_stock_bucket b where b.campaign_id = id)")
+    private long stockVersion;
 
     @Column(name = "purchase_limit", nullable = false)
     private int purchaseLimit;
@@ -78,11 +87,25 @@ public class CampaignEntity {
             Instant startsAt,
             Instant endsAt
     ) {
+        this(productId, variantId, flashPrice, totalStock, purchaseLimit, 1, startsAt, endsAt);
+    }
+
+    public CampaignEntity(
+            Long productId,
+            Long variantId,
+            BigDecimal flashPrice,
+            int totalStock,
+            int purchaseLimit,
+            int stockBuckets,
+            Instant startsAt,
+            Instant endsAt
+    ) {
         this.productId = productId;
         this.variantId = variantId;
         this.flashPrice = flashPrice;
         this.totalStock = totalStock;
         this.remainingStock = totalStock;
+        this.stockBuckets = Math.max(1, Math.min(stockBuckets, totalStock));
         this.purchaseLimit = purchaseLimit;
         this.startsAt = startsAt;
         this.endsAt = endsAt;
@@ -128,6 +151,14 @@ public class CampaignEntity {
 
     public long getVersion() {
         return version;
+    }
+
+    public long getStockVersion() {
+        return stockVersion;
+    }
+
+    public int getStockBuckets() {
+        return stockBuckets;
     }
 
     public CampaignStatus getStatus() {

@@ -6,7 +6,7 @@ import java.util.Map;
 
 import com.flashflow.common.event.DomainEvent;
 import com.flashflow.common.event.EventTypes;
-import com.flashflow.trade.campaign.CampaignRepository;
+import com.flashflow.trade.campaign.CampaignStockRepository;
 import com.flashflow.trade.common.BusinessException;
 import com.flashflow.trade.common.ErrorCode;
 import com.flashflow.trade.inventory.StockCompensationReason;
@@ -20,20 +20,20 @@ import org.springframework.transaction.annotation.Transactional;
 public class OrderCommandService {
 
     private final OrderRepository orderRepository;
-    private final CampaignRepository campaignRepository;
+    private final CampaignStockRepository stockRepository;
     private final OutboxService outboxService;
     private final StockCompensationService stockCompensationService;
     private final Duration paymentTimeout;
 
     public OrderCommandService(
             OrderRepository orderRepository,
-            CampaignRepository campaignRepository,
+            CampaignStockRepository stockRepository,
             OutboxService outboxService,
             StockCompensationService stockCompensationService,
             @Value("${flashflow.order.payment-timeout:PT15M}") Duration paymentTimeout
     ) {
         this.orderRepository = orderRepository;
-        this.campaignRepository = campaignRepository;
+        this.stockRepository = stockRepository;
         this.outboxService = outboxService;
         this.stockCompensationService = stockCompensationService;
         this.paymentTimeout = paymentTimeout;
@@ -110,7 +110,7 @@ public class OrderCommandService {
         if (!order.cancelIfPending(now)) {
             return false;
         }
-        campaignRepository.incrementStock(order.getCampaignId(), order.getQuantity());
+        stockRepository.increment(order.getCampaignId(), order.getStockBucket(), order.getQuantity());
         outboxService.append(DomainEvent.create(
                 EventTypes.ORDER_CANCELLED,
                 orderNo,

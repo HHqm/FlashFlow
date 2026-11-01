@@ -55,6 +55,9 @@ public class OrderEntity {
     @Column(nullable = false)
     private int quantity;
 
+    @Column(name = "stock_bucket", nullable = false)
+    private int stockBucket;
+
     @Column(name = "product_name", nullable = false, length = 160)
     private String productName;
 
@@ -315,6 +318,15 @@ public class OrderEntity {
     public String getTrackingNo() { return trackingNo; }
     public Instant getShippedAt() { return shippedAt; }
     public Instant getReceivedAt() { return receivedAt; }
+
+    public int getStockBucket() {
+        return stockBucket;
+    }
+
+    /** Records which campaign stock bucket this order drew from; set before the order is saved. */
+    void assignStockBucket(int bucket) {
+        this.stockBucket = bucket;
+    }
 
     public StockReservation stockReservation() {
         return new StockReservation(campaignId, userId, idempotencyKey, orderNo, quantity);

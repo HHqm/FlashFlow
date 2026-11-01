@@ -1,0 +1,54 @@
+# CDC mode: Debezium reads committed Outbox inserts from the MySQL binlog instead of the
+# trade-service polling publisher. Start with:
+#   docker compose -f compose.yml -f compose.cdc.yml up -d --build
+# The notification service is unchanged: topic, key (order number) and value (event JSON) are
+# the same as in polling mode.
+services:
+  kafka-connect:
+    image: quay.io/debezium/connect:3.3
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: flashflow-connect
+      CONFIG_STORAGE_TOPIC: flashflow-connect.configs
+      OFFSET_STORAGE_TOPIC: flashflow-connect.offsets
+      STATUS_STORAGE_TOPIC: flashflow-connect.statuses
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_CONNECTOR_CLIENT_CONFIG_OVERRIDE_POLICY: All
+      HEAP_OPTS: -Xms512m -Xmx1g
+    ports:
+      - "8083:8083"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/ >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+    restart: unless-stopped
+    networks: [flashflow]
+
+  cdc-init:
+    image: mysql:8.4
+    entrypoint: ["bash", "/debezium/register.sh"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-flashflow_root}
+      DEBEZIUM_PASSWORD: ${DEBEZIUM_PASSWORD:-flashflow_cdc}
+    volumes:
+      - ./docker/debezium:/debezium:ro
+    depends_on:
+      kafka-connect:
+        condition: service_healthy
+    restart: "no"
+    networks: [flashflow]
+
+  trade-service:
+    environment:
+      OUTBOX_MODE: CDC
+      OUTBOX_JOB_ENABLED: "false"
+      # The table stays empty in CDC mode, so there is nothing to purge.
+      OUTBOX_CLEANUP_JOB_ENABLED: "false"

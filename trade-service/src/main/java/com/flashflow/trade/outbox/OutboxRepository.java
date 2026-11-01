@@ -35,12 +35,20 @@ public interface OutboxRepository extends JpaRepository<OutboxEntity, UUID> {
 
     long countByStatus(OutboxStatus status);
 
-    // Native because JPQL has no DELETE ... LIMIT; small chunks keep each delete's lock footprint short.
+    // No automatic clear: the caller's other managed entities (orders being paid or cancelled in the
+    // same transaction) must stay attached. The deleted events are never modified afterwards.
+    @Modifying
+    @Query("delete from OutboxEntity event where event.eventId in :eventIds")
+    int deleteCapturedEvents(@Param("eventIds") Collection<UUID> eventIds);
+
+    // Native because JPQL has no DELETE ... LIMIT. The (status, created_at) range keeps the scan
+    // and its locks inside expired PUBLISHED rows, away from where new PENDING events are inserted.
     @Modifying
     @Query(value = """
-            delete from outbox_event
+            delete /*+ INDEX(outbox_event idx_outbox_status_created) */ from outbox_event
              where status = 'PUBLISHED'
                and created_at < :cutoff
+             order by created_at
              limit :chunkSize
             """, nativeQuery = true)
     int deletePublishedBefore(

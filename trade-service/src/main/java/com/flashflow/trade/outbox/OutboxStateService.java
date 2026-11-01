@@ -5,6 +5,7 @@ import java.util.Collection;
 import java.util.UUID;
 
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
@@ -24,7 +25,8 @@ public class OutboxStateService {
         return outboxRepository.markPublished(eventIds, Instant.now());
     }
 
-    @Transactional
+    // READ COMMITTED takes no gap locks, so the delete can never block concurrent Outbox inserts.
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public int purgePublishedBefore(Instant cutoff, int chunkSize) {
         return outboxRepository.deletePublishedBefore(cutoff, chunkSize);
     }

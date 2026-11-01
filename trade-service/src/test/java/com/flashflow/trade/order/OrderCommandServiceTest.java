@@ -14,7 +14,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.Optional;
 
 import com.flashflow.common.event.DomainEvent;
-import com.flashflow.trade.campaign.CampaignRepository;
+import com.flashflow.trade.campaign.CampaignStockRepository;
 import com.flashflow.trade.common.BusinessException;
 import com.flashflow.trade.common.ErrorCode;
 import com.flashflow.trade.inventory.StockCompensationReason;
@@ -37,7 +37,7 @@ class OrderCommandServiceTest {
     private OrderRepository orderRepository;
 
     @Mock
-    private CampaignRepository campaignRepository;
+    private CampaignStockRepository stockRepository;
 
     @Mock
     private OutboxService outboxService;
@@ -51,7 +51,7 @@ class OrderCommandServiceTest {
     void setUp() {
         commandService = new OrderCommandService(
                 orderRepository,
-                campaignRepository,
+                stockRepository,
                 outboxService,
                 stockCompensationService,
                 Duration.ofMinutes(15));
@@ -131,7 +131,7 @@ class OrderCommandServiceTest {
 
         assertThat(cancelled).isTrue();
         assertThat(order.getStatus()).isEqualTo(OrderStatus.CANCELLED);
-        verify(campaignRepository).incrementStock(10L, 1);
+        verify(stockRepository).increment(10L, 0, 1);
         verify(stockCompensationService).scheduleAfterCommit(
                 order.stockReservation(), StockCompensationReason.PAYMENT_TIMEOUT);
     }
@@ -146,7 +146,7 @@ class OrderCommandServiceTest {
                 ORDER_NO, Instant.now().minus(15, ChronoUnit.MINUTES));
 
         assertThat(cancelled).isFalse();
-        verify(campaignRepository, never()).incrementStock(10L, 1);
+        verify(stockRepository, never()).increment(10L, 0, 1);
         verify(stockCompensationService, never()).scheduleAfterCommit(
                 ArgumentMatchers.any(), ArgumentMatchers.any());
     }

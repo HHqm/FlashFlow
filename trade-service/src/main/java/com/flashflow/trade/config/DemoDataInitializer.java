@@ -13,6 +13,7 @@ import com.flashflow.trade.address.ShippingAddressRepository;
 import com.flashflow.trade.campaign.CampaignCacheInitializer;
 import com.flashflow.trade.campaign.CampaignEntity;
 import com.flashflow.trade.campaign.CampaignRepository;
+import com.flashflow.trade.campaign.CampaignStockRepository;
 import com.flashflow.trade.campaign.CampaignStatus;
 import com.flashflow.trade.category.CategoryEntity;
 import com.flashflow.trade.category.CategoryRepository;
@@ -43,6 +44,7 @@ public class DemoDataInitializer implements ApplicationRunner {
     private final PasswordEncoder passwordEncoder;
     private final CampaignCacheInitializer cacheInitializer;
     private final ShippingAddressRepository addressRepository;
+    private final CampaignStockRepository stockRepository;
 
     public DemoDataInitializer(
             UserRepository userRepository,
@@ -52,7 +54,8 @@ public class DemoDataInitializer implements ApplicationRunner {
             CampaignRepository campaignRepository,
             PasswordEncoder passwordEncoder,
             CampaignCacheInitializer cacheInitializer,
-            ShippingAddressRepository addressRepository
+            ShippingAddressRepository addressRepository,
+            CampaignStockRepository stockRepository
     ) {
         this.userRepository = userRepository;
         this.categoryRepository = categoryRepository;
@@ -62,6 +65,7 @@ public class DemoDataInitializer implements ApplicationRunner {
         this.passwordEncoder = passwordEncoder;
         this.cacheInitializer = cacheInitializer;
         this.addressRepository = addressRepository;
+        this.stockRepository = stockRepository;
     }
 
     @Override
@@ -156,7 +160,7 @@ public class DemoDataInitializer implements ApplicationRunner {
                 Instant.now())) {
             return;
         }
-        campaignRepository.save(new CampaignEntity(
+        CampaignEntity campaign = campaignRepository.save(new CampaignEntity(
                 variant.getProductId(),
                 variant.getId(),
                 flashPrice,
@@ -164,6 +168,7 @@ public class DemoDataInitializer implements ApplicationRunner {
                 purchaseLimit,
                 Instant.now().minus(1, ChronoUnit.HOURS),
                 Instant.now().plus(7, ChronoUnit.DAYS)));
+        stockRepository.allocate(campaign.getId(), totalStock, campaign.getStockBuckets());
     }
 
     private UserEntity seedUser(String username, String password, String role) {

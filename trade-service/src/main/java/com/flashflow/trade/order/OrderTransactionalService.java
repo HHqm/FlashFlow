@@ -7,7 +7,7 @@ import java.util.Map;
 
 import com.flashflow.common.event.DomainEvent;
 import com.flashflow.common.event.EventTypes;
-import com.flashflow.trade.campaign.CampaignRepository;
+import com.flashflow.trade.campaign.CampaignStockRepository;
 import com.flashflow.trade.common.BusinessException;
 import com.flashflow.trade.common.ErrorCode;
 import com.flashflow.trade.outbox.OutboxService;
@@ -17,16 +17,16 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class OrderTransactionalService {
 
-    private final CampaignRepository campaignRepository;
+    private final CampaignStockRepository stockRepository;
     private final OrderRepository orderRepository;
     private final OutboxService outboxService;
 
     public OrderTransactionalService(
-            CampaignRepository campaignRepository,
+            CampaignStockRepository stockRepository,
             OrderRepository orderRepository,
             OutboxService outboxService
     ) {
-        this.campaignRepository = campaignRepository;
+        this.stockRepository = stockRepository;
         this.orderRepository = orderRepository;
         this.outboxService = outboxService;
     }
@@ -72,6 +72,12 @@ public class OrderTransactionalService {
 
     @Transactional
     public List<OrderEntity> persistReservedOrders(List<OrderWriteCommand> commands) {
+        return persistReservedOrders(commands, 0);
+    }
+
+    /** Commits a batch of one campaign's orders against a single stock bucket. */
+    @Transactional
+    public List<OrderEntity> persistReservedOrders(List<OrderWriteCommand> commands, int bucket) {
         if (commands.isEmpty()) {
             return List.of();
         }
@@ -89,7 +95,7 @@ public class OrderTransactionalService {
         if (mixedCampaigns) {
             throw new IllegalArgumentException("A write batch must contain one campaign");
         }
-        if (campaignRepository.decrementStock(campaign.campaignId(), totalQuantity) != 1) {
+        if (stockRepository.decrement(campaign.campaignId(), bucket, totalQuantity) != 1) {
             throw new BusinessException(ErrorCode.SOLD_OUT);
         }
 
@@ -113,6 +119,7 @@ public class OrderTransactionalService {
                     command.shippingAddress().recipientName(),
                     command.shippingAddress().phone(),
                     command.shippingAddress().fullAddress());
+            order.assignStockBucket(bucket);
             orders.add(order);
             events.add(DomainEvent.create(
                     EventTypes.ORDER_CREATED,

@@ -118,7 +118,6 @@ class OrderServiceTest {
         assertThat(result.orderNo()).isEqualTo(ORDER_NO);
         assertThat(result.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
         assertThat(result.replayed()).isFalse();
-        verify(redisRepository).checkRateLimit(USER_ID);
         verify(writeCoordinator).persist(command);
     }
 

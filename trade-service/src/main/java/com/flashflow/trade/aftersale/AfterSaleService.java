@@ -7,7 +7,7 @@ import java.util.UUID;
 
 import com.flashflow.common.event.DomainEvent;
 import com.flashflow.common.event.EventTypes;
-import com.flashflow.trade.campaign.CampaignRepository;
+import com.flashflow.trade.campaign.CampaignStockRepository;
 import com.flashflow.trade.common.BusinessException;
 import com.flashflow.trade.common.ErrorCode;
 import com.flashflow.trade.inventory.StockCompensationReason;
@@ -24,20 +24,20 @@ public class AfterSaleService {
 
     private final OrderRepository orderRepository;
     private final ReturnRequestRepository returnRepository;
-    private final CampaignRepository campaignRepository;
+    private final CampaignStockRepository stockRepository;
     private final StockCompensationService stockCompensationService;
     private final OutboxService outboxService;
 
     public AfterSaleService(
             OrderRepository orderRepository,
             ReturnRequestRepository returnRepository,
-            CampaignRepository campaignRepository,
+            CampaignStockRepository stockRepository,
             StockCompensationService stockCompensationService,
             OutboxService outboxService
     ) {
         this.orderRepository = orderRepository;
         this.returnRepository = returnRepository;
-        this.campaignRepository = campaignRepository;
+        this.stockRepository = stockRepository;
         this.stockCompensationService = stockCompensationService;
         this.outboxService = outboxService;
     }
@@ -163,7 +163,7 @@ public class AfterSaleService {
     }
 
     private void restoreDatabaseStock(OrderEntity order) {
-        if (campaignRepository.incrementStock(order.getCampaignId(), order.getQuantity()) != 1) {
+        if (stockRepository.increment(order.getCampaignId(), order.getStockBucket(), order.getQuantity()) != 1) {
             throw new BusinessException(
                     ErrorCode.INTERNAL_ERROR,
                     "活动库存恢复失败，请稍后重试");

@@ -77,6 +77,8 @@ flashflow:
     campaign-cache-ttl: ${ORDER_CAMPAIGN_CACHE_TTL:PT1S}
     snapshot-cache-ttl: ${ORDER_SNAPSHOT_CACHE_TTL:PT5M}
     write-stripes: ${ORDER_WRITE_STRIPES:4}
+    # Stock rows per new campaign; each bucket is committed by its own write stripe.
+    stock-buckets: ${ORDER_STOCK_BUCKETS:4}
     write-queue-capacity: ${ORDER_WRITE_QUEUE_CAPACITY:2048}
     write-batch-size: ${ORDER_WRITE_BATCH_SIZE:64}
     write-batch-window: ${ORDER_WRITE_BATCH_WINDOW:PT0.008S}
@@ -84,6 +86,8 @@ flashflow:
     order-events-topic: ${ORDER_EVENTS_TOPIC:flashflow.order-events.v1}
     partitions: ${ORDER_EVENTS_PARTITIONS:6}
   outbox:
+    # POLLING: scheduled publisher; CDC: Debezium reads the binlog (see compose.cdc.yml)
+    mode: ${OUTBOX_MODE:POLLING}
     max-retries: ${OUTBOX_MAX_RETRIES:10}
     batch-size: ${OUTBOX_BATCH_SIZE:500}
     send-timeout: ${OUTBOX_SEND_TIMEOUT:PT5S}

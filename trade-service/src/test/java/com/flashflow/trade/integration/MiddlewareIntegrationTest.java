@@ -178,7 +178,14 @@ abstract class MiddlewareIntegrationTest {
 
     int databaseStock(long campaignId) {
         return jdbcTemplate.queryForObject(
-                "select remaining_stock from flash_campaign where id = ?", Integer.class, campaignId);
+                "select coalesce(sum(remaining_stock), 0) from campaign_stock_bucket where campaign_id = ?",
+                Integer.class,
+                campaignId);
+    }
+
+    long countBucketsUsed(long campaignId) {
+        return jdbcTemplate.queryForObject(
+                "select count(distinct stock_bucket) from trade_order where campaign_id = ?", Long.class, campaignId);
     }
 
     long countOrders(long campaignId) {

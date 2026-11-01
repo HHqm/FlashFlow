@@ -22,7 +22,6 @@ public class SeckillRedisRepository {
     private final DefaultRedisScript<String> reserveScript;
     private final DefaultRedisScript<Long> compensateScript;
     private final DefaultRedisScript<Long> stockReconcileScript;
-    private final DefaultRedisScript<Long> rateLimitScript;
     private final int requestsPerSecond;
     private final Counter reservedCounter;
     private final Counter rejectedCounter;
@@ -32,7 +31,6 @@ public class SeckillRedisRepository {
             DefaultRedisScript<String> seckillReserveScript,
             DefaultRedisScript<Long> seckillCompensateScript,
             DefaultRedisScript<Long> stockReconcileScript,
-            DefaultRedisScript<Long> rateLimitScript,
             @Value("${flashflow.seckill.requests-per-second:5}") int requestsPerSecond,
             MeterRegistry meterRegistry
     ) {
@@ -40,29 +38,9 @@ public class SeckillRedisRepository {
         this.reserveScript = seckillReserveScript;
         this.compensateScript = seckillCompensateScript;
         this.stockReconcileScript = stockReconcileScript;
-        this.rateLimitScript = rateLimitScript;
         this.requestsPerSecond = requestsPerSecond;
         this.reservedCounter = meterRegistry.counter("flashflow.seckill.reserved");
         this.rejectedCounter = meterRegistry.counter("flashflow.seckill.rejected");
-    }
-
-    public void checkRateLimit(long userId) {
-        String key = "flashflow:rate:seckill:" + userId + ":" + Instant.now().getEpochSecond();
-        try {
-            Long allowed = redisTemplate.execute(
-                    rateLimitScript,
-                    List.of(key),
-                    Integer.toString(requestsPerSecond),
-                    "2");
-            if (allowed == null || allowed == 0L) {
-                rejectedCounter.increment();
-                throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS);
-            }
-        } catch (BusinessException exception) {
-            throw exception;
-        } catch (DataAccessException exception) {
-            throw new BusinessException(ErrorCode.INFRASTRUCTURE_UNAVAILABLE, "Redis 暂时不可用");
-        }
     }
 
     public ReservationResult reserve(
@@ -92,11 +70,16 @@ public class SeckillRedisRepository {
         try {
             String result = redisTemplate.execute(
                     reserveScript,
-                    List.of(CampaignCacheInitializer.stockKey(campaignId), purchaserKey, requestKey),
+                    List.of(
+                            CampaignCacheInitializer.stockKey(campaignId),
+                            purchaserKey,
+                            requestKey,
+                            rateKey(userId)),
                     orderNo,
                     Long.toString(ttlSeconds),
                     Integer.toString(quantity),
-                    Integer.toString(purchaseLimit));
+                    Integer.toString(purchaseLimit),
+                    Integer.toString(requestsPerSecond));
             if (result == null) {
                 throw new BusinessException(ErrorCode.INFRASTRUCTURE_UNAVAILABLE);
             }
@@ -109,6 +92,7 @@ public class SeckillRedisRepository {
             }
             rejectedCounter.increment();
             return switch (result) {
+                case "RATE_LIMITED" -> throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS);
                 case "SOLD_OUT" -> new ReservationResult(ReservationResult.Status.SOLD_OUT, null);
                 case "ALREADY_PURCHASED" ->
                         new ReservationResult(ReservationResult.Status.ALREADY_PURCHASED, null);
@@ -176,6 +160,10 @@ public class SeckillRedisRepository {
 
     private static String purchaserKey(long campaignId, long userId) {
         return "flashflow:campaign:" + campaignId + ":buyer:" + userId;
+    }
+
+    private static String rateKey(long userId) {
+        return "flashflow:rate:seckill:" + userId + ":" + Instant.now().getEpochSecond();
     }
 
     private static String requestKey(long userId, String idempotencyKey) {

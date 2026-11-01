@@ -12,8 +12,26 @@ public record OrderCampaignContext(
         Instant startsAt,
         Instant endsAt,
         CampaignStatus status,
-        OrderProductSnapshot productSnapshot
+        OrderProductSnapshot productSnapshot,
+        int stockBuckets
 ) {
+
+    public OrderCampaignContext(
+            long campaignId,
+            BigDecimal flashPrice,
+            int purchaseLimit,
+            Instant startsAt,
+            Instant endsAt,
+            CampaignStatus status,
+            OrderProductSnapshot productSnapshot
+    ) {
+        this(campaignId, flashPrice, purchaseLimit, startsAt, endsAt, status, productSnapshot, 1);
+    }
+
+    /** Picks the stock bucket for an order; order numbers are random, so load spreads evenly. */
+    public int bucketFor(String orderNo) {
+        return Math.floorMod(orderNo.hashCode(), stockBuckets);
+    }
 
     public boolean hasStarted(Instant now) {
         return !startsAt.isAfter(now);

@@ -49,6 +49,8 @@ class SeckillConcurrencyIT extends MiddlewareIntegrationTest {
         assertThat(databaseStock(campaignId)).isZero();
         assertThat(redisStock(campaignId)).isZero();
         assertThat(countOrders(campaignId)).isEqualTo(stock);
+        // Stock is split across 4 bucket rows written in parallel; the sale must still be exact.
+        assertThat(countBucketsUsed(campaignId)).isGreaterThan(1);
 
         // Outbox -> Kafka is at-least-once, so the topic must contain at least every created order.
         assertThat(consumeCreatedOrderNos(Set.copyOf(orderNos), Duration.ofSeconds(60)))

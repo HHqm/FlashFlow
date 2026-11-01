@@ -12,6 +12,7 @@ import com.flashflow.trade.product.ProductRepository;
 import com.flashflow.trade.product.ProductVariantEntity;
 import com.flashflow.trade.product.ProductVariantRepository;
 import com.flashflow.trade.order.OrderCampaignContextService;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -26,6 +27,8 @@ public class CampaignService {
     private final ApplicationEventPublisher eventPublisher;
     private final CampaignCacheInitializer cacheInitializer;
     private final OrderCampaignContextService orderCampaignContextService;
+    private final CampaignStockRepository stockRepository;
+    private final int stockBuckets;
 
     public CampaignService(
             CampaignRepository campaignRepository,
@@ -34,7 +37,9 @@ public class CampaignService {
             CategoryRepository categoryRepository,
             ApplicationEventPublisher eventPublisher,
             CampaignCacheInitializer cacheInitializer,
-            OrderCampaignContextService orderCampaignContextService
+            OrderCampaignContextService orderCampaignContextService,
+            CampaignStockRepository stockRepository,
+            @Value("${flashflow.order.stock-buckets:4}") int stockBuckets
     ) {
         this.campaignRepository = campaignRepository;
         this.productRepository = productRepository;
@@ -43,6 +48,8 @@ public class CampaignService {
         this.eventPublisher = eventPublisher;
         this.cacheInitializer = cacheInitializer;
         this.orderCampaignContextService = orderCampaignContextService;
+        this.stockRepository = stockRepository;
+        this.stockBuckets = stockBuckets;
     }
 
     @Transactional(readOnly = true)
@@ -108,8 +115,10 @@ public class CampaignService {
                 request.flashPrice(),
                 request.totalStock(),
                 request.purchaseLimit(),
+                stockBuckets,
                 request.startsAt(),
                 request.endsAt()));
+        stockRepository.allocate(campaign.getId(), request.totalStock(), campaign.getStockBuckets());
         eventPublisher.publishEvent(new CampaignCreatedEvent(campaign.getId()));
         return toView(campaign, product, variant);
     }

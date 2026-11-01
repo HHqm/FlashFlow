@@ -32,6 +32,7 @@ public class OrderWriteCoordinator {
     private final List<Thread> workers = new ArrayList<>();
     private final Counter rejectedCounter;
     private final Counter splitCounter;
+    private final Counter bucketFallbackCounter;
     private final DistributionSummary batchSizeSummary;
     private volatile boolean running;
 
@@ -54,6 +55,7 @@ public class OrderWriteCoordinator {
         }
         this.rejectedCounter = meterRegistry.counter("flashflow.order.write.rejected");
         this.splitCounter = meterRegistry.counter("flashflow.order.write.batch.split");
+        this.bucketFallbackCounter = meterRegistry.counter("flashflow.order.write.bucket.fallback");
         this.batchSizeSummary = DistributionSummary.builder("flashflow.order.write.batch.size")
                 .minimumExpectedValue(1.0)
                 .maximumExpectedValue((double) this.maxBatchSize)
@@ -91,7 +93,7 @@ public class OrderWriteCoordinator {
 
     public OrderEntity persist(OrderWriteCommand command) {
         PendingOrder pending = new PendingOrder(command, new CompletableFuture<>());
-        ArrayBlockingQueue<PendingOrder> queue = queues.get(stripe(command.campaign().campaignId()));
+        ArrayBlockingQueue<PendingOrder> queue = queues.get(stripe(command));
         if (!queue.offer(pending)) {
             rejectedCounter.increment();
             throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS, "下单请求过多，请稍后重试");
@@ -106,8 +108,11 @@ public class OrderWriteCoordinator {
         }
     }
 
-    private int stripe(long campaignId) {
-        return Math.floorMod(Long.hashCode(campaignId), stripeCount);
+    // Buckets of one campaign map to consecutive stripes, so with stripes >= buckets every bucket
+    // of a hot campaign has its own writer thread and commits in parallel.
+    private int stripe(OrderWriteCommand command) {
+        int bucket = command.campaign().bucketFor(command.orderNo());
+        return Math.floorMod(Long.hashCode(command.campaign().campaignId()) + bucket, stripeCount);
     }
 
     private void runWorker(ArrayBlockingQueue<PendingOrder> queue) {
@@ -161,58 +166,81 @@ public class OrderWriteCoordinator {
     }
 
     private void persistGroups(List<PendingOrder> pendingBatch) {
-        Map<Long, List<PendingOrder>> groups = new LinkedHashMap<>();
+        Map<BucketKey, List<PendingOrder>> groups = new LinkedHashMap<>();
         for (PendingOrder pending : pendingBatch) {
+            OrderCampaignContext campaign = pending.command().campaign();
             groups.computeIfAbsent(
-                    pending.command().campaign().campaignId(),
+                    new BucketKey(campaign.campaignId(), campaign.bucketFor(pending.command().orderNo())),
                     ignored -> new ArrayList<>())
                     .add(pending);
         }
-        groups.values().forEach(group -> persistGroup(group, new SoldOutBound()));
+        groups.forEach((key, group) -> persistGroup(group, key.bucket()));
     }
 
-    private void persistGroup(List<PendingOrder> group, SoldOutBound bound) {
+    /**
+     * Commits the group into its own bucket and moves whatever does not fit on to the next
+     * bucket. Redis never admits more than the campaign's total stock, so an order only ends up
+     * SOLD_OUT here when every bucket is exhausted: one bucket selling out early does not turn
+     * buyers away while another still has stock.
+     */
+    private void persistGroup(List<PendingOrder> group, int ownBucket) {
+        int buckets = group.getFirst().command().campaign().stockBuckets();
+        List<PendingOrder> remaining = group;
+        for (int offset = 0; offset < buckets && !remaining.isEmpty(); offset++) {
+            if (offset > 0) {
+                bucketFallbackCounter.increment(remaining.size());
+            }
+            remaining = persistIntoBucket(remaining, (ownBucket + offset) % buckets, new SoldOutBound());
+        }
+        fail(remaining, new BusinessException(ErrorCode.SOLD_OUT));
+    }
+
+    /** Returns the orders that did not fit into this bucket; every other order is completed. */
+    private List<PendingOrder> persistIntoBucket(List<PendingOrder> group, int bucket, SoldOutBound bound) {
         int quantity = group.stream().mapToInt(pending -> pending.command().quantity()).sum();
         if (quantity >= bound.smallestRejected) {
-            // This worker is the only writer for the campaign, so stock can only have shrunk
-            // since MySQL rejected a smaller batch: skip the round trip.
-            fail(group, new BusinessException(ErrorCode.SOLD_OUT));
-            return;
+            // Bucket stock only shrinks while we work on it, so a batch at least as large as one
+            // MySQL just rejected cannot fit either: skip the round trip.
+            return group;
         }
         List<OrderWriteCommand> commands = group.stream()
                 .map(PendingOrder::command)
                 .toList();
         try {
-            List<OrderEntity> orders = transactionalService.persistReservedOrders(commands);
+            List<OrderEntity> orders = transactionalService.persistReservedOrders(commands, bucket);
             batchSizeSummary.record(orders.size());
             for (int index = 0; index < group.size(); index++) {
                 group.get(index).result().complete(orders.get(index));
             }
+            return List.of();
         } catch (BusinessException exception) {
             if (exception.errorCode() != ErrorCode.SOLD_OUT) {
                 fail(group, exception);
-                return;
+                return List.of();
             }
             bound.smallestRejected = quantity;
             if (group.size() == 1) {
-                fail(group, exception);
-                return;
+                return group;
             }
-            // Redis admitted more than MySQL can fill, e.g. right after a cache re-warm or a
-            // reconciliation repair. The combined decrement fails as a whole, so split the batch
-            // and let the orders that still fit commit instead of rejecting all of them. With the
-            // bound above this costs O(log n) extra transactions, not O(n).
+            // The combined decrement fails as a whole, so split the batch and let the orders that
+            // still fit commit. With the bound above this costs O(log n) extra transactions.
             splitCounter.increment();
             int middle = group.size() / 2;
-            persistGroup(group.subList(0, middle), bound);
-            persistGroup(group.subList(middle, group.size()), bound);
+            List<PendingOrder> leftOver = new ArrayList<>(
+                    persistIntoBucket(group.subList(0, middle), bucket, bound));
+            leftOver.addAll(persistIntoBucket(group.subList(middle, group.size()), bucket, bound));
+            return leftOver;
         } catch (RuntimeException exception) {
             fail(group, exception);
+            return List.of();
         }
     }
 
     private static void fail(List<PendingOrder> group, RuntimeException exception) {
         group.forEach(pending -> pending.result().completeExceptionally(exception));
+    }
+
+    private record BucketKey(long campaignId, int bucket) {
     }
 
     private static final class SoldOutBound {

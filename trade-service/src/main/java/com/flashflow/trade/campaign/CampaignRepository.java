@@ -42,39 +42,4 @@ public interface CampaignRepository extends JpaRepository<CampaignEntity, Long> 
                and campaign.status = com.flashflow.trade.campaign.CampaignStatus.ACTIVE
             """)
     int pauseActiveByVariantId(@Param("variantId") long variantId);
-
-    @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("""
-            update CampaignEntity campaign
-               set campaign.remainingStock = campaign.remainingStock - :quantity,
-                   campaign.version = campaign.version + 1
-             where campaign.id = :campaignId
-               and campaign.remainingStock >= :quantity
-               and campaign.status = com.flashflow.trade.campaign.CampaignStatus.ACTIVE
-            """)
-    int decrementStock(
-            @Param("campaignId") long campaignId,
-            @Param("quantity") int quantity
-    );
-
-    default int decrementStock(long campaignId) {
-        return decrementStock(campaignId, 1);
-    }
-
-    @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("""
-            update CampaignEntity campaign
-               set campaign.remainingStock = campaign.remainingStock + :quantity,
-                   campaign.version = campaign.version + 1
-             where campaign.id = :campaignId
-               and campaign.remainingStock + :quantity <= campaign.totalStock
-            """)
-    int incrementStock(
-            @Param("campaignId") long campaignId,
-            @Param("quantity") int quantity
-    );
-
-    default int incrementStock(long campaignId) {
-        return incrementStock(campaignId, 1);
-    }
 }

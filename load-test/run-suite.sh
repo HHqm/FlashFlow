@@ -114,7 +114,8 @@ wait_outbox_drained() {
 # Collects the post-run facts that prove or disprove oversell for one campaign.
 campaign_facts() {
     local campaign=$1 row
-    row=$(mysql_q "select total_stock, remaining_stock,
+    row=$(mysql_q "select total_stock,
+                          (select coalesce(sum(remaining_stock), 0) from campaign_stock_bucket where campaign_id = $campaign),
                           (select count(*) from trade_order where campaign_id = $campaign),
                           (select coalesce(sum(quantity), 0) from trade_order where campaign_id = $campaign),
                           (select count(distinct user_id) from trade_order where campaign_id = $campaign)
@@ -150,14 +151,33 @@ scenario_warmup() {
     sleep 5
 }
 
+# Waits until the notification service has consumed at least $2 events since $1 (epoch ms).
+# Works in both Outbox modes; in CDC mode outbox_event is always empty, so this is the real check.
+wait_events_delivered() {
+    local since=$1 expected=$2 delivered=0
+    for _ in $(seq 1 180); do
+        delivered=$(mysql_q "select count(*) from processed_message
+                              where processed_at >= from_unixtime($since / 1000)" flashflow_notification)
+        if [ "$delivered" -ge "$expected" ]; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "only $delivered of $expected events delivered" | tee -a "$OUT/suite.log"
+}
+
 scenario_throughput() {
-    local rate campaign
+    local rate campaign started accepted latency
     for rate in $RATES; do
         log "throughput $rate req/s"
         campaign=$(create_campaign $((rate * 25)) 1)
+        started=$(date +%s%3N)
         run_k6 "throughput-r$rate" multi-user-flash-sale.js \
             CAMPAIGN_ID="$campaign" RATE="$rate" DURATION=20s BUYERS="$BUYERS"
-        record "throughput-r$rate" "$rate" "$campaign"
+        accepted=$(json "int(d['metrics'].get('orders_accepted', {}).get('count', 0))" < "$OUT/throughput-r$rate.json")
+        wait_events_delivered "$started" "$accepted"
+        latency=$(bash load-test/event-latency.sh "$started")
+        record "throughput-r$rate" "$rate" "$campaign" "order->notification $latency"
         sleep 10
     done
 }

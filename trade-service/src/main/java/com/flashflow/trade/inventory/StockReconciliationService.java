@@ -132,7 +132,7 @@ public class StockReconciliationService {
             return view(campaign, redisStock, pendingCompensations, StockState.DRIFT_OBSERVED);
         }
 
-        Observation current = new Observation(campaign.getVersion(), redisStock, now);
+        Observation current = new Observation(campaign.getStockVersion(), redisStock, now);
         Observation previous = observations.get(campaignId);
         if (previous == null || !previous.sameStateAs(current)) {
             observations.put(campaignId, current);

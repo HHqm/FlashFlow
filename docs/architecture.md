@@ -36,28 +36,42 @@ flowchart LR
 
 如果所有请求直接竞争数据库行锁，热点活动会把并发压力集中到单行。FlashFlow 先用 Redis Lua 原子预占，把绝大多数售罄、重复购买和超频请求挡在数据库外；成功预占的少量请求再进入 MySQL。
 
-MySQL 仍然执行：
+MySQL 仍然对订单所属的库存桶执行条件扣减：
 
 ```sql
-UPDATE flash_campaign
-SET remaining_stock = remaining_stock - :quantity
-WHERE id = :campaignId
-  AND remaining_stock >= :quantity
-  AND status = 'ACTIVE';
+UPDATE campaign_stock_bucket b JOIN flash_campaign c ON c.id = b.campaign_id
+SET b.remaining_stock = b.remaining_stock - :quantity, b.version = b.version + 1
+WHERE b.campaign_id = :campaignId AND b.bucket_no = :bucket
+  AND b.remaining_stock >= :quantity
+  AND c.status = 'ACTIVE';
 ```
 
 只有影响行数为 1 才创建订单。因此 Redis 是流量削峰与快速判定层，MySQL 是最终事实与防超卖屏障。Redis 不可用时系统返回 503，不绕过预占直接写库。
+
+### 3.1 库存分桶
+
+单写队列让同一活动的写入串行，避免大量事务在一行上等锁；代价是单活动吞吐受一个写线程限制。压测中单桶在 2,500 次/秒时写队列被打满。分桶把这个上限拆开：
+
+- 创建活动时把库存平均拆成 N 行（`flashflow.order.stock-buckets`，默认 4），`flash_campaign` 不再存剩余库存，剩余库存 = 各桶之和；
+- 订单号哈希决定订单落到哪个桶，同一活动的不同桶映射到相邻的写分片，各自独立提交，互不争用行锁；
+- **Redis 仍是一个精确的全局计数器**，准入逻辑不变，所以分桶不会改变“能卖多少”，只把写入压力分散开；
+- **公平性**：订单号哈希难免让各桶消耗不均。某个桶不够时，放不下的订单整组转到下一个桶，沿用二分拆批和“已拒绝最小批量”的剪枝；只有所有桶都拒绝才返回售罄。因为 Redis 放行的总量不超过总库存，被放行的订单一定能在某个桶里成交，不会出现“这个桶卖完、那个桶还剩”导致的少卖；
+- 订单记录自己扣的是哪个桶（`trade_order.stock_bucket`），取消、超时、退款时回补到原桶，且不超过该桶的分配量；
+- 对账使用各桶版本号之和作为“期间是否有提交”的指纹。
+
+单元测试覆盖了极端情况：4 个桶中 3 个为空、6 件库存全在一个桶里，20 个并发订单恰好成交 6 单且全部来自有库存的桶。
 
 ## 4. Redis Lua 原子区
 
 `seckill_reserve.lua` 在一次 Redis 执行中完成：
 
-1. 查询请求幂等键；
-2. 读取用户在该活动的累计购买量；
-3. 校验本次数量是否超过个人限购；
-4. 校验活动缓存库存是否充足；
-5. 按数量扣减库存并累加用户购买量；
-6. 写请求到订单号的映射。
+1. 按用户每秒计数做业务限流（原先是单独一次 Lua 调用，合并后每单少一次 Redis 往返）；
+2. 查询请求幂等键；
+3. 读取用户在该活动的累计购买量；
+4. 校验本次数量是否超过个人限购；
+5. 校验活动缓存库存是否充足；
+6. 按数量扣减库存并累加用户购买量；
+7. 写请求到订单号的映射。
 
 这避免了多次 Redis 命令之间的竞态。脚本只存订单号，不存完整订单，订单事实仍由 MySQL 管理。
 
@@ -86,7 +100,31 @@ FlashFlow 将完整事件先写入 `outbox_event`，与订单共享本地事务�
 
 发送与标记之间仍可能在进程崩溃时产生重复消息，这是刻意采用的“至少一次”语义。下游 Inbox 去重负责把它收敛为一次业务效果。
 
-生产规模继续扩大时，可将轮询 Outbox 替换为 Debezium CDC。领域事件契约和消费者无需改变。
+### 6.1 两种投递模式
+
+| | 轮询（默认） | CDC（`compose.cdc.yml`） |
+| --- | --- | --- |
+| 读取方式 | 每 100 ms 查询 `PENDING` 事件并发送，成功后批量标记 `PUBLISHED` | Debezium 读取 MySQL binlog 中的 Outbox 插入 |
+| 数据库负担 | 轮询查询 + 状态更新 + 保留期清理 | 插入后同事务删除，表始终为空 |
+| 投递语义 | 至少一次 | 至少一次（连接器重启从 binlog 位点继续） |
+| 运维成本 | 无额外组件 | 需要 Kafka Connect 与 binlog 权限 |
+
+CDC 模式下 Debezium 的 Outbox Event Router 把每条插入转换成与轮询模式完全相同的消息：同一个 Topic、订单号为 key、事件 JSON 为 value，所以通知服务和事件契约都不需要改。行在插入它的同一事务里被删除：binlog 仍然记录了插入，Event Router 忽略删除事件，表不会增长。
+
+```bash
+docker compose -f compose.yml -f compose.cdc.yml up -d --build
+```
+
+`cdc-init` 一次性容器会创建 Debezium 账号（对已有数据卷同样有效）并以 `PUT` 方式幂等注册连接器。
+
+### 6.2 Outbox 索引、保留期清理与锁
+
+轮询模式下有两条访问路径：发布器按创建时间取最早的 `PENDING` 事件，保留期清理删除 7 天前的 `PUBLISHED` 事件。压测中两者都出过问题：
+
+1. **清理阻塞写入**：第一版删除语句经 `(status, next_attempt_at, created_at)` 索引扫描全部 `PUBLISHED` 行，在 REPEATABLE READ 下给扫描记录和 PENDING/PUBLISHED 边界的间隙加 next-key 锁，而新插入的 `PENDING` 事件正好落在这个间隙里。表现为每分钟一次、持续 7–14 秒的下单停顿（`Innodb_row_lock_waits` 平均等待 6.9 s）。清理事务改为 READ COMMITTED（不加间隙锁）。
+2. **发布器越落后越慢**：`WHERE status = 'PENDING' ORDER BY created_at LIMIT 500` 在旧索引上要对整个积压做 filesort；为清理临时加的 `created_at` 索引又让优化器先扫过全部已发布行，单次轮询 6.2 秒，积压 11.7 万条时每秒只能投递 63 条。
+
+最终用一个 `(status, created_at, next_attempt_at)` 复合索引同时服务两条路径（V10）：发布器按索引顺序读到 500 条即停，清理只扫描过期的 `PUBLISHED` 区间，锁永远碰不到 `PENDING` 区间。同样 9 万条积压在 36 秒内清空，约 2,510 条/秒。
 
 ## 7. Kafka 分区、顺序与死信
 

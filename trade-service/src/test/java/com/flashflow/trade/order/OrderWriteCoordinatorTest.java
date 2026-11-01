@@ -2,6 +2,7 @@ package com.flashflow.trade.order;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -10,6 +11,8 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
@@ -44,7 +47,7 @@ class OrderWriteCoordinatorTest {
                 Instant.now().plusSeconds(3600),
                 CampaignStatus.ACTIVE,
                 new OrderProductSnapshot(3L, 4L, "商品", "黑色 · 标准版"));
-        when(transactionalService.persistReservedOrders(anyList()))
+        when(transactionalService.persistReservedOrders(anyList(), anyInt()))
                 .thenAnswer(invocation -> {
                     List<OrderWriteCommand> commands = invocation.getArgument(0);
                     return commands.stream()
@@ -95,7 +98,7 @@ class OrderWriteCoordinatorTest {
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<OrderWriteCommand>> captor = ArgumentCaptor.forClass(List.class);
-        verify(transactionalService).persistReservedOrders(captor.capture());
+        verify(transactionalService).persistReservedOrders(captor.capture(), anyInt());
         assertThat(captor.getValue()).hasSize(10);
     }
 
@@ -104,7 +107,7 @@ class OrderWriteCoordinatorTest {
         OrderCampaignContext campaign = campaign();
         AtomicInteger databaseStock = new AtomicInteger(5);
         // Mirrors the conditional UPDATE: the whole batch fails when its total exceeds the stock.
-        when(transactionalService.persistReservedOrders(anyList()))
+        when(transactionalService.persistReservedOrders(anyList(), anyInt()))
                 .thenAnswer(invocation -> {
                     List<OrderWriteCommand> commands = invocation.getArgument(0);
                     int total = commands.stream().mapToInt(OrderWriteCommand::quantity).sum();
@@ -152,7 +155,7 @@ class OrderWriteCoordinatorTest {
     void soldOutBatchCostsLogarithmicTransactionsNotOnePerOrder() throws Exception {
         OrderCampaignContext campaign = campaign();
         AtomicInteger transactions = new AtomicInteger();
-        when(transactionalService.persistReservedOrders(anyList()))
+        when(transactionalService.persistReservedOrders(anyList(), anyInt()))
                 .thenAnswer(invocation -> {
                     transactions.incrementAndGet();
                     throw new BusinessException(ErrorCode.SOLD_OUT);
@@ -178,6 +181,74 @@ class OrderWriteCoordinatorTest {
         }
         // One batch of 64 walks 64 -> 32 -> ... -> 1 (7 attempts); a plain split would need 127.
         assertThat(transactions.get()).isLessThan(30);
+    }
+
+    @Test
+    void ordersWhoseBucketIsEmptyFallBackToBucketsThatStillHaveStock() throws Exception {
+        OrderCampaignContext campaign = new OrderCampaignContext(
+                10L,
+                new BigDecimal("99.00"),
+                100,
+                Instant.now().minusSeconds(60),
+                Instant.now().plusSeconds(3600),
+                CampaignStatus.ACTIVE,
+                new OrderProductSnapshot(3L, 4L, "商品", "黑色 · 标准版"),
+                4);
+        // Deliberately uneven: all 6 units sit in bucket 2, the other buckets are empty.
+        Map<Integer, AtomicInteger> bucketStock = new ConcurrentHashMap<>(Map.of(
+                0, new AtomicInteger(0),
+                1, new AtomicInteger(0),
+                2, new AtomicInteger(6),
+                3, new AtomicInteger(0)));
+        Map<Integer, AtomicInteger> committedPerBucket = new ConcurrentHashMap<>();
+        when(transactionalService.persistReservedOrders(anyList(), anyInt()))
+                .thenAnswer(invocation -> {
+                    List<OrderWriteCommand> commands = invocation.getArgument(0);
+                    int bucket = invocation.getArgument(1);
+                    int total = commands.stream().mapToInt(OrderWriteCommand::quantity).sum();
+                    AtomicInteger stock = bucketStock.get(bucket);
+                    synchronized (stock) {
+                        if (stock.get() < total) {
+                            throw new BusinessException(ErrorCode.SOLD_OUT);
+                        }
+                        stock.addAndGet(-total);
+                    }
+                    committedPerBucket.computeIfAbsent(bucket, ignored -> new AtomicInteger())
+                            .addAndGet(total);
+                    return commands.stream().map(OrderWriteCoordinatorTest::entity).toList();
+                });
+        OrderWriteCoordinator coordinator = new OrderWriteCoordinator(
+                transactionalService, 4, 64, 64, Duration.ofMillis(30), new SimpleMeterRegistry());
+
+        long committed = 0;
+        long soldOut = 0;
+        coordinator.start();
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            CountDownLatch startGate = new CountDownLatch(1);
+            List<Future<OrderEntity>> results = IntStream.range(0, 20)
+                    .mapToObj(index -> executor.submit(() -> {
+                        startGate.await();
+                        return coordinator.persist(command(campaign, index));
+                    }))
+                    .toList();
+            startGate.countDown();
+            for (Future<OrderEntity> result : results) {
+                try {
+                    result.get();
+                    committed++;
+                } catch (ExecutionException exception) {
+                    soldOut++;
+                }
+            }
+        } finally {
+            coordinator.stop();
+        }
+
+        // Every unit is sold even though 3 of 4 buckets were empty, and nothing is sold twice.
+        assertThat(committed).isEqualTo(6);
+        assertThat(soldOut).isEqualTo(14);
+        assertThat(bucketStock.get(2)).hasValue(0);
+        assertThat(committedPerBucket.keySet()).containsExactly(2);
     }
 
     private static OrderCampaignContext campaign() {
