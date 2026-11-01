@@ -14,8 +14,8 @@ Java 21 和 Node.js 不是启动容器的必需条件；只有本地修改后需
 ## 2. 获取代码
 
 ```powershell
-git clone https://github.com/HHqm/FlashFlow-.git
-cd FlashFlow-
+git clone https://github.com/HHqm/FlashFlow.git
+cd FlashFlow
 ```
 
 ## 3. 配置本地环境

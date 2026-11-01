@@ -3,22 +3,25 @@
 # Redis and the Outbox after every scenario. Results land in load-test/results/<suite>/.
 #
 # Usage: bash load-test/run-suite.sh [scenario ...]
-#   seed        create BUYERS load-test accounts and mint their JWTs
-#   warmup      200 req/s for 10 s, discarded
+#   Every run first creates the BUYERS load-test accounts if missing and mints fresh JWTs.
+#   warmup     200 req/s for 10 s, discarded
 #   throughput  RATES (default "500 800 1000") req/s for 20 s, every request a distinct buyer
 #   hotsale     10,000 buyers each try twice at 2,000 req/s for 1,000 units, limit 1 per buyer
 #   idempotency one key replayed 1,000 times by 100 concurrent VUs
 #   ratelimit   one buyer floods 100 req/s with the default protection settings
 #   chaos       SIGKILL trade-service in the middle of 500 req/s, then wait for reconciliation
 # With no arguments every scenario runs in that order. The stack must use default settings
-# (docker compose up -d), not compose.benchmark.yml.
+# (docker compose up -d), not compose.benchmark.yml. k6 runs inside the compose network and
+# calls gateway-service directly: Docker Desktop's published host port adds a port forwarder
+# that starts refusing new connections at around 1,000 requests per second.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 export MSYS_NO_PATHCONV=1
 
 GATEWAY=${GATEWAY:-http://localhost:8080}
-K6_BASE_URL=${K6_BASE_URL:-http://host.docker.internal:8080}
+K6_BASE_URL=${K6_BASE_URL:-http://gateway-service:8080}
+K6_NETWORK=${K6_NETWORK:-flashflow_flashflow}
 K6_IMAGE=${K6_IMAGE:-grafana/k6:0.57.0}
 BUYERS=${BUYERS:-20000}
 RATES=${RATES:-"500 800 1000"}
@@ -87,7 +90,7 @@ run_k6() {
     for pair in "$@"; do
         env_args+=(-e "$pair")
     done
-    docker run --rm --add-host host.docker.internal:host-gateway \
+    docker run --rm --network "$K6_NETWORK" \
         -v "$SCRIPTS_DIR:/scripts" \
         -e BASE_URL="$K6_BASE_URL" -e RUN_ID="$SUITE-$name" "${env_args[@]}" \
         "$K6_IMAGE" run --quiet \
@@ -133,7 +136,7 @@ record() {
 }
 
 scenario_seed() {
-    log "seed $BUYERS buyers"
+    log "seed $BUYERS buyers and mint fresh tokens"
     mysql_q "SET @users = $BUYERS; $(cat load-test/seed-users.sql)" > "$OUT/buyers.tsv"
     JWT_SECRET=$(docker compose exec -T trade-service printenv JWT_SECRET | tr -d '\r') \
         python load-test/mint-tokens.py load-test/results/users.json < "$OUT/buyers.tsv"
@@ -245,9 +248,10 @@ scenario_chaos() {
 }
 
 login_admin
+scenario_seed
 scenarios=("$@")
 if [ ${#scenarios[@]} -eq 0 ]; then
-    scenarios=(seed warmup throughput hotsale idempotency ratelimit chaos)
+    scenarios=(warmup throughput hotsale idempotency ratelimit chaos)
 fi
 for scenario in "${scenarios[@]}"; do
     "scenario_$scenario"

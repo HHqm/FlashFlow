@@ -15,6 +15,7 @@ const soldOut = new Counter("orders_sold_out");
 const limitExceeded = new Counter("orders_limit_exceeded");
 const throttled = new Counter("orders_throttled");
 const serverErrors = new Counter("orders_server_errors");
+const transportErrors = new Counter("orders_transport_errors");
 const otherOutcomes = new Counter("orders_other");
 const successLatency = new Trend("order_success_latency", true);
 const rejectLatency = new Trend("order_reject_latency", true);
@@ -35,7 +36,7 @@ export const options = {
   summaryTrendStats: ["avg", "min", "med", "max", "p(90)", "p(95)", "p(99)"],
 };
 
-const baseUrl = __ENV.BASE_URL || "http://host.docker.internal:8080";
+const baseUrl = __ENV.BASE_URL || "http://gateway-service:8080";
 const campaignId = __ENV.CAMPAIGN_ID;
 // BUYERS limits how many distinct buyers are used; iterations beyond it reuse buyers, which
 // exercises the per-user purchase limit.
@@ -84,8 +85,11 @@ export default function () {
     }
   } else if (response.status === 429) {
     throttled.add(1);
-  } else if (response.status >= 500 || response.status === 0) {
+  } else if (response.status >= 500) {
     serverErrors.add(1);
+  } else if (response.status === 0) {
+    // Never reached a server: connection refused or reset on the load generator's side.
+    transportErrors.add(1);
   } else {
     otherOutcomes.add(1);
   }

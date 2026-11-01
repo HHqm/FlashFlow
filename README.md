@@ -1,16 +1,31 @@
 # FlashFlow 高并发限量购与订单履约平台
 
-FlashFlow 是一个面向 Java 后端求职作品集的生产化微服务电商项目。它实现商品检索、SKU、收货地址、订单地址快照、支付、发货、确认收货、退款售后、已购评价和运营审核等商城闭环，也围绕“限量商品抢购”实现网关鉴权、Redis 原子预占、MySQL 最终扣减、事务 Outbox、Kafka 异步解耦、消费幂等、失败重试、死信队列和库存补偿。
+[![CI](https://github.com/HHqm/FlashFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/HHqm/FlashFlow/actions/workflows/ci.yml)
 
-FlashFlow 是一套带前台商城、运营后台和高并发秒杀链路的 Java 电商项目，重点覆盖以下工程问题：
+FlashFlow 是一个面向 Java 后端求职作品集的生产化微服务电商项目：用户商城 + 运营后台 + 网关 + 交易服务 + 异步通知服务。它围绕“限量商品抢购”实现 Redis Lua 原子预占、MySQL 最终防超卖、单写队列微批量落库、事务 Outbox、Kafka 至少一次投递、Inbox 消费幂等、库存补偿任务与自动对账，并用真实中间件集成测试和 k6 压测给出可复现的数据。
 
-1. 高并发下如何不超卖；
-2. 重复请求如何只创建一笔订单；
-3. 数据库提交成功后，消息如何不丢；
-4. Kafka 重复投递时，下游如何不重复执行；
-5. 订单取消、退款审批和库存回补如何保持状态一致；
-6. 发货、收货、退款与评价如何通过状态机避免越权和非法跳转；
-7. 评价如何保证来自真实已购且已确认收货的用户并支持运营审核。
+## 结果速览
+
+以下数字全部来自仓库内脚本在本机 Docker Compose 单实例环境中的实测，复现方法见 [测试与压测](#测试与压测)。
+
+| 维度 | 结果 |
+| --- | --- |
+| 防超卖 | 1 万名买家以 2,000 次/秒各抢 2 次、争抢 1,000 件：恰好成交 1,000 单、每人最多 1 单，MySQL 与 Redis 余量均为 0 |
+| 吞吐 | 2 万个独立买家、默认限流，1,000 次/秒持续下单 2 万次全部成功，P95 37 ms、零错误 |
+| 幂等 | 同一幂等键并发提交 1,001 次只生成 1 笔订单、只扣 1 件库存 |
+| 限流 | 单个买家以 100 次/秒狂刷 10 秒只成交 55 单（约 5 单/秒），其余 429，零 5xx |
+| 故障恢复 | 500 次/秒压测中 `SIGKILL` 交易服务：无超卖，被截断的 2 件预占在流量停止 31 秒后被对账任务自动修复 |
+| 性能优化 | 多买家压测暴露单用户压测掩盖的热路径数据库往返，用 JFR 定位并优化后，同口径 500 次/秒的 P95 从 5.4 s 降至 238 ms |
+| 自动化测试 | 66 个测试；其中 5 个集成测试用 Testcontainers 启动真实 MySQL 8.4、Redis 8.4、Kafka 4.3，覆盖并发抢购、幂等重放、Kafka 投递、`docker pause` 冻结 Redis 的故障注入和库存对账 |
+
+## 解决的工程问题
+
+1. 高并发下如何不超卖，同时不让热点库存行拖垮数据库；
+2. 客户端重试时如何只创建一笔订单；
+3. 数据库提交成功后，消息如何不丢；Kafka 重复投递时，下游如何不重复执行；
+4. 取消、超时、退款后 Redis 回补失败，如何不让活动提前“售罄”；
+5. 发货、收货、退款与评价如何通过状态机避免越权和非法跳转；
+6. 性能数字如何可复现、可解释，而不是一次性的截图。
 
 ## 技术栈
 
@@ -19,17 +34,16 @@ FlashFlow 是一套带前台商城、运营后台和高并发秒杀链路的 Jav
 | 语言与框架 | Java 21、Spring Boot 4.1、Spring Cloud 2025.1 |
 | 网关与安全 | Spring Cloud Gateway、Spring Security、JWT、Redis 令牌桶 |
 | 数据存储 | MySQL 8.4、Spring Data JPA、Flyway |
-| 缓存与并发 | Redis 8、Lua 原子脚本、分布式锁、幂等键 |
+| 缓存与并发 | Redis 8、Lua 原子脚本、分布式锁、幂等键、单写队列 |
 | 消息系统 | Apache Kafka 4.3、事务 Outbox、Inbox 去重、DLT |
-| 工程能力 | Maven 多模块、Docker Compose、Actuator、Prometheus、JaCoCo、GitHub Actions |
-
-Spring Boot 4.1 要求 Java 17 及以上，项目选择招聘中更常见的 Java 21 LTS 作为编译基线。版本依据可查阅 [Spring Boot 官方文档](https://docs.spring.io/spring-boot/) 和 [Spring Cloud 官方兼容矩阵](https://spring.io/projects/spring-cloud/)。
+| 前端 | Vue 3、TypeScript、Vite |
+| 质量与运维 | JUnit 5、Testcontainers、k6、JFR、Actuator、Prometheus 告警规则、Docker Compose、GitHub Actions |
 
 ## 系统结构
 
 ```mermaid
 flowchart LR
-    Client["客户端 / 压测工具"] --> Gateway["gateway-service :8080"]
+    Client["浏览器 / k6"] --> Gateway["gateway-service :8080"]
     Gateway --> Redis[("Redis")]
     Gateway --> Trade["trade-service :8081"]
     Trade --> MySQLTrade[("MySQL<br/>flashflow_trade")]
@@ -41,139 +55,14 @@ flowchart LR
     Kafka --> DLT[["order-events.v1.DLT"]]
 ```
 
-服务职责：
-
-- `gateway-service`：统一路由、JWT 校验、Redis 分布式限流、Trace ID 透传；
-- `trade-service`：用户登录、类目、SPU/SKU、商品检索、收货地址、秒杀活动、库存预占、订单、支付、发货/收货、退款售后、已购评价、Outbox；
-- `notification-service`：Kafka 消费、Inbox 幂等、站内通知、失败重试与死信；
+- `gateway-service`：统一路由、JWT 校验、按用户的 Redis 令牌桶限流、Trace ID 透传；
+- `trade-service`：登录、类目、SPU/SKU、检索、地址簿、秒杀活动、库存预占、订单、支付、发货/收货、退款售后、评价、Outbox、库存补偿与对账；
+- `notification-service`：Kafka 批量消费、Inbox 幂等、站内通知、失败重试与死信；
 - `flashflow-common`：版本化跨服务事件契约，不共享数据库实体。
 
-更完整的设计与故障分析见 [架构说明](docs/architecture.md)。
+## 核心设计
 
-## 商城与运营能力
-
-系统按“前台用户、后台运营”分离职责：
-
-- 用户前台：按名称、类目、颜色和规格搜索商品，按价格或评分排序；查看颜色/规格 SKU、原价、秒杀价、库存、限购和已购评价；
-- 交易履约：维护收货地址并在下单时生成不可变地址快照；完成支付后由运营录入承运商和运单号，用户确认收货后可发表一次 1～5 星真实评价；
-- 运营后台：创建和启停类目，创建含多个颜色/规格 SKU 的商品，追加 SKU，独立维护售价、库存和状态，控制商品上架/下架；
-- 秒杀运营：选择具体 SKU 创建活动，配置活动价、活动库存、每人限购量和起止时间，控制活动启停并预热 Redis；
-- 订单与售后：管理员查看全量订单、执行发货、审批或驳回退款并记录处理意见；驳回后恢复申请前的履约状态，审批成功后恢复 MySQL 活动库存并补偿 Redis；
-- 评价运营：管理员查看真实买家和关联订单，隐藏/恢复评价并发表商家回复；前台只聚合可见评价的平均分和数量；
-- 库存边界：创建秒杀活动时从 SKU 可售库存划拨活动库存，Redis Lua 按购买数量原子预扣，并由 MySQL 条件更新提供最终防超卖屏障；
-- 权限边界：`ADMIN` 只能管理商城、订单和售后，`USER` 才能购买、取消、退款和评价自己的订单；商品或 SKU 下架会自动暂停关联活动。
-
-本轮功能取舍参考了 [macrozheng/mall](https://github.com/macrozheng/mall) 的前后台领域划分、[Medusa Commerce Modules](https://docs.medusajs.com/resources/commerce-modules) 的模块化电商领域、[Adobe Commerce 退货工作流](https://experienceleague.adobe.com/en/docs/commerce-admin/stores-sales/order-management/returns/returns) 与[商品评价管理](https://experienceleague.adobe.com/en/docs/commerce-admin/marketing/merchandising/product-reviews/product-reviews)。当前版本优先实现可演示、可验证的一致交易闭环，而不是堆叠彼此割裂的菜单。
-
-## 页面截图
-
-用户商城支持商品搜索、分类筛选、秒杀下单、订单查看、退款申请、评价和站内通知：
-
-![FlashFlow 用户商城](docs/screenshots/user-storefront.png)
-
-管理员后台支持商品/SPU/SKU、秒杀活动、订单售后、评价审核和分类运营：
-
-![FlashFlow 运营后台](docs/screenshots/admin-console.png)
-
-完整本地使用流程见 [快速开始教程](docs/quickstart.md)。
-
-## 一键运行
-
-需要 Docker Desktop（建议 Docker Compose 2.20+）：
-
-```bash
-docker compose up -d --build
-```
-
-同时启动 Kafka UI 和 Prometheus：
-
-```bash
-docker compose --profile tools up -d --build
-```
-
-启动后可访问：
-
-| 地址 | 用途 |
-| --- | --- |
-| `http://localhost:8080` | API 网关 |
-| `http://localhost:8080/actuator/health` | 网关健康检查 |
-| `http://localhost:3000` | FlashFlow 前端演示控制台 |
-| `http://localhost:8081/actuator/health` | 交易服务健康检查 |
-| `http://localhost:8082/actuator/health` | 通知服务健康检查 |
-| `http://localhost:8090` | Kafka UI（tools profile） |
-| `http://localhost:9090` | Prometheus（tools profile） |
-
-首次启动会创建演示数据：
-
-| 用户 | 密码 | 角色 |
-| --- | --- | --- |
-| `demo` | `Demo@123456` | USER |
-| `admin` | `Admin@123456` | ADMIN |
-
-这些账号只用于本地演示，生产环境应关闭 `DEMO_DATA_ENABLED` 并替换所有默认密钥。
-
-## 跑通一次完整交易
-
-以下命令适用于 PowerShell。
-
-登录并保存 JWT：
-
-```powershell
-$body = @{ username = "demo"; password = "Demo@123456" } | ConvertTo-Json
-$login = Invoke-RestMethod -Method Post `
-  -Uri "http://localhost:8080/api/v1/auth/login" `
-  -ContentType "application/json" `
-  -Body $body
-$token = $login.data.accessToken
-```
-
-查询活动：
-
-```powershell
-$campaigns = Invoke-RestMethod `
-  -Uri "http://localhost:8080/api/v1/campaigns"
-$campaignId = $campaigns.data[0].id
-$addresses = Invoke-RestMethod `
-  -Uri "http://localhost:8080/api/v1/addresses" `
-  -Headers @{ Authorization = "Bearer $token" }
-$addressId = $addresses.data[0].id
-```
-
-创建订单：
-
-```powershell
-$headers = @{
-  Authorization = "Bearer $token"
-  "Idempotency-Key" = [guid]::NewGuid().ToString("N")
-}
-$order = Invoke-RestMethod -Method Post `
-  -Uri "http://localhost:8080/api/v1/campaigns/$campaignId/orders" `
-  -Headers $headers `
-  -ContentType "application/json" `
-  -Body (@{ quantity = 1; addressId = $addressId } | ConvertTo-Json)
-$orderNo = $order.data.orderNo
-```
-
-模拟支付：
-
-```powershell
-Invoke-RestMethod -Method Post `
-  -Uri "http://localhost:8080/api/v1/orders/$orderNo/pay" `
-  -Headers @{ Authorization = "Bearer $token" }
-```
-
-查看 Kafka 异步生成的站内通知：
-
-```powershell
-Invoke-RestMethod `
-  -Uri "http://localhost:8082/internal/notifications?userId=1"
-```
-
-IntelliJ IDEA 用户也可以直接运行 [接口请求集](docs/api.http)。
-
-## 一致性设计
-
-下单成功链路：
+### 下单链路
 
 ```mermaid
 sequenceDiagram
@@ -181,73 +70,152 @@ sequenceDiagram
     participant G as Gateway
     participant R as Redis
     participant T as Trade Service
+    participant W as 单写队列
     participant M as MySQL
     participant K as Kafka
-    participant N as Notification
 
     C->>G: POST order + JWT + Idempotency-Key
-    G->>R: 网关令牌桶
-    G->>T: 转发请求
-    T->>R: Lua 限流并原子预占库存
+    G->>R: 按用户令牌桶
+    G->>T: 转发
+    T->>R: Lua：用户限流 + 幂等 + 限购 + 原子预占库存
     R-->>T: RESERVED / DUPLICATE / SOLD_OUT
-    T->>M: 条件扣库存 + 写订单 + 写 Outbox（同一事务）
+    T->>W: 按活动路由到固定写分片
+    W->>M: 一个事务：合并扣减库存 + 批量写订单 + 批量写 Outbox
     T-->>C: 返回订单
-    T->>K: Outbox 至少一次投递
-    K->>N: order.created.v1
-    N->>M: Inbox 去重 + 写通知（同一事务）
+    T->>K: Outbox 至少一次投递（订单号为 key）
 ```
 
-关键保证：
+- **Redis Lua** 把“查幂等、查限购、查库存、扣库存、记幂等映射”合并为一次原子执行，售罄和超限请求不进数据库；
+- **单写队列 + 微批量**：同一活动只由一个写线程处理，8 ms 窗口内最多合并 64 单，一次 `remaining_stock >= 总数量` 条件更新扣减库存，订单和 Outbox 用 JDBC 批量插入；
+- **MySQL 条件更新是最终防超卖屏障**：Redis 即使因故障或误操作多放行，合并批次也会失败；此时批次二分拆分重试，只让放得下的订单成交，额外开销 O(log n)；
+- **事务 Outbox**：订单与事件同事务提交，Producer `acks=all` + 幂等发送；消费端以 `event_id` 主键做 Inbox 去重，失败 3 次进入 DLT。
 
-- Redis Lua 把“查库存、扣库存、用户限购、幂等键”合并为一个原子操作；
-- MySQL 使用 `remaining_stock >= quantity` 的按数量条件更新作为最终防超卖屏障；
-- 订单与 Outbox 事件写入同一个本地事务，消除“订单成功但消息丢失”的双写窗口；
-- Producer 开启 `acks=all` 和幂等发送，Outbox 失败按指数退避重试；
-- Consumer 使用 `processed_message.event_id` 主键实现 Inbox 去重；
-- 消费连续失败 3 次进入 `.DLT`，避免毒消息阻塞正常分区；
-- 15 分钟未支付订单自动取消，MySQL 恢复库存，再补偿 Redis。
+### 库存自愈闭环
 
-## 常用命令
+取消、超时关单、退款通过都会在 MySQL 回补库存，Redis 回补失败时活动会提前“售罄”。系统按故障层级设置三道防线：
+
+1. **补偿任务**：在回补 MySQL 的同一事务中写入 `stock_compensation_task`，提交后立即执行；失败按指数退避重试，耗尽后告警并可在后台手动重试；
+2. **幂等脚本**：补偿 Lua 按订单号判断，重复执行返回 `NOOP`，所以超时重试、并发重试都只回补一次；
+3. **定时对账**：同一漂移在静默窗口（默认 30 s）内行版本号与 Redis 值都不变才视为真实泄漏，用 Lua CAS 修复并写审计日志；缓存 key 缺失只告警不自动预热。
+
+运营后台“库存对账”页面可以查看每个活动的 MySQL/Redis 库存、补偿任务和修复记录。完整推导见 [架构说明 §8.1](docs/architecture.md#81-库存自愈闭环)。
+
+## 测试与压测
+
+### 自动化测试
+
+| 层级 | 工具 | 内容 |
+| --- | --- | --- |
+| 单元测试 | JUnit 5、Mockito、H2 | 状态机、限购、补偿退避、对账判定、批次拆分、写入顺序、UUIDv7 |
+| 集成测试（`*IT`） | Testcontainers：MySQL 8.4、Redis 8.4、Kafka 4.3 | 真实 Flyway 迁移；HTTP → JWT → Lua → 单写队列 → MySQL → Outbox → Kafka |
+
+集成测试场景：120 人抢 30 件恰好 30 单；同一幂等键并发 40 次只生成 1 单；30 条订单事件全部以订单号为 key 进入 Kafka；冻结 Redis 时取消订单，恢复后库存恰好回补一次；人为制造 3 件库存泄漏，首轮只观察、次轮 CAS 修复；零静默窗口的激进对账与 150 个并发买家同时运行仍不超卖、不少卖。
 
 ```bash
-# 编译和测试全部模块
-./mvnw clean verify
-
-# 仅运行交易服务测试
-./mvnw -pl trade-service -am test
-
-# 查看服务日志
-docker compose logs -f gateway-service trade-service notification-service
-
-# 停止服务，保留数据卷
-docker compose down
-
-# 停止并删除本项目的数据卷（会删除本地演示数据）
-docker compose down -v
+./mvnw clean verify          # 单元测试 + 集成测试（需要 Docker）
+./mvnw -pl trade-service -am test   # 只跑单元测试
 ```
 
-Windows 可将 `./mvnw` 替换为 `.\mvnw.cmd`。
+### 压测结果
+
+环境：AMD Ryzen 9 8940HX（16 核 32 线程）、Docker Desktop、各服务与中间件单实例；k6 与服务同机，在 compose 网络内直连网关；2 万个独立买家，默认限流配置。
+
+| 场景 | 速率 | 请求 | 成功 | 售罄 / 超限购 / 429 | 5xx | 成功 P95 | 成功 P99 | 超卖 |
+| --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- |
+| 持续下单 | 500/s | 10,000 | 10,000 | 0 / 0 / 0 | 0 | 29.6 ms | 170.7 ms | 否 |
+| 持续下单 | 800/s | 16,000 | 16,000 | 0 / 0 / 0 | 0 | 33.1 ms | 48.4 ms | 否 |
+| 持续下单 | 1,000/s | 20,001 | 20,000 | 0 / 1 / 0 | 0 | 37.3 ms | 52.0 ms | 否 |
+| 热点抢购（1,000 件） | 2,000/s | 20,002 | 1,000 | 18,000 / 1,002 / 0 | 0 | 124.7 ms | 139.4 ms | 否 |
+| 单用户狂刷 | 100/s | 1,001 | 55 | 0 / 0 / 946 | 0 | 24.7 ms | 26.7 ms | 否 |
+| 强杀交易服务 | 500/s | 19,136 | 12,355 | 停机期间 6,781 次 5xx | — | — | — | 否，31 s 后自动修复 |
+
+每个场景结束后都核对：`成交数量 = 总库存 − MySQL 余量`、MySQL 余量 = Redis 余量、每个买家最多 1 单、Outbox 积压清零。
+
+**瓶颈定位与优化**（同口径对比，压测器经宿主机端口访问）：
+
+| 目标速率 | 优化前 P95 | 优化后 P95 | 优化前实际速率 | 优化后实际速率 |
+| ---: | ---: | ---: | ---: | ---: |
+| 300/s | 2,727 ms | 135 ms | 242/s | 299/s |
+| 500/s | 5,362 ms | 238 ms | 258/s | 498/s |
+
+JFR 显示时间花在 MySQL 往返而不是 CPU：地址快照每单开一次只读 JPA 事务（约 7 次往返，单用户压测因缓存命中而看不到）、Outbox 每条事件多一次 `merge` 查询、`IDENTITY` 主键让订单无法批量插入。对应改为单条自动提交 SQL、`Persistable` 实体、号段主键批量插入，并加上 UUIDv7 事件 ID、连接会话状态缓存与 Outbox 保留期清理。
+
+### 复现压测
+
+```bash
+docker compose up -d --build
+bash load-test/run-suite.sh                     # 全部场景，约 10 分钟
+RATES="300 500" bash load-test/run-suite.sh throughput hotsale   # 指定场景
+```
+
+脚本会自动创建 2 万个无法登录的压测买家并签发 JWT，k6 在 compose 网络内直接访问网关，每个场景结束后核对 MySQL 剩余库存、Redis 库存、订单数、每个买家的订单数和 Outbox 积压，结果写入 `load-test/results/<suite>/summary.md`。完整报告与瓶颈分析见 [性能测试报告](docs/performance-test-2026-11-01.md)。
+
+## 商城与运营能力
+
+- **用户前台**：按名称、类目、颜色和规格搜索商品，按价格或评分排序；查看 SKU、原价、秒杀价、库存、限购和已购评价；
+- **交易履约**：地址簿与不可变地址快照；支付、发货、确认收货、主动取消、退款申请；确认收货后可发表一次 1～5 星评价；
+- **运营后台**：类目、SPU/SKU、售价与库存、秒杀活动（活动价、活动库存、限购、时段、启停、预热）、订单发货、退款审批、评价审核与回复、库存对账；
+- **权限边界**：`ADMIN` 只能管理商城、订单和售后，`USER` 才能购买、取消、退款和评价自己的订单；商品或 SKU 下架会自动暂停关联活动。
+
+![FlashFlow 用户商城](docs/screenshots/user-storefront.png)
+
+![FlashFlow 运营后台](docs/screenshots/admin-console.png)
+
+## 一键运行
+
+需要 Docker Desktop（建议 Docker Compose 2.20+）：
+
+```bash
+git clone https://github.com/HHqm/FlashFlow.git
+cd FlashFlow
+docker compose up -d --build
+# 同时启动 Kafka UI 和 Prometheus（含告警规则）
+docker compose --profile tools up -d --build
+```
+
+| 地址 | 用途 |
+| --- | --- |
+| `http://localhost:3000` | 前端：用户商城与运营后台 |
+| `http://localhost:8080` | API 网关 |
+| `http://localhost:8081/actuator/health` | 交易服务健康检查 |
+| `http://localhost:8082/actuator/health` | 通知服务健康检查 |
+| `http://localhost:8090` | Kafka UI（tools profile） |
+| `http://localhost:9090` | Prometheus（tools profile） |
+
+首次启动会创建演示账号（仅用于本地，生产环境应关闭 `DEMO_DATA_ENABLED` 并替换所有默认密钥）：
+
+| 用户 | 密码 | 角色 |
+| --- | --- | --- |
+| `demo` | `Demo@123456` | USER |
+| `admin` | `Admin@123456` | ADMIN |
+
+逐步操作见 [快速开始教程](docs/quickstart.md)，接口可直接用 IntelliJ IDEA 运行 [接口请求集](docs/api.http)。
 
 ## 目录
 
 ```text
-flashflow-platform/
-├── flashflow-common/       # 版本化事件契约
-├── gateway-service/        # 网关、JWT、限流、Trace ID
-├── trade-service/          # 限量购、订单、支付、Outbox、超时关单
+FlashFlow/
+├── flashflow-common/       # 版本化事件契约（UUIDv7 事件 ID）
+├── gateway-service/        # 网关、JWT、按用户限流、Trace ID
+├── trade-service/          # 秒杀、订单、售后、Outbox、库存补偿与对账
 ├── notification-service/   # Kafka Consumer、Inbox、DLT
-├── docker/                 # MySQL 初始化与 Prometheus 配置
-├── docs/                   # 架构、接口、面试与简历材料
-├── load-test/              # k6 热点保护压测脚本
+├── frontend/               # Vue 3 用户商城与运营后台
+├── docker/                 # MySQL 初始化、Prometheus 配置与告警规则
+├── docs/                   # 架构、接口、性能报告、面试与简历材料
+├── load-test/              # k6 场景、压测买家生成、一键压测与结果核对
 └── compose.yml             # 本地完整环境
 ```
 
-## 求职材料
+## 文档
 
-- [简历项目描述](docs/resume.md)：可按实际压测结果替换占位数字；
-- [本地性能测试报告](docs/performance-test-2026-08-12.md)：包含分档吞吐、延迟、热点库存、幂等与瓶颈分析；
-- [面试追问手册](docs/interview-guide.md)：解释组件选择、边界与故障处理；
-- [OpenAPI 契约](docs/openapi.yaml)：主要外部接口定义；
-- [架构说明](docs/architecture.md)：一致性、扩展和生产化取舍。
+- [架构说明](docs/architecture.md)：一致性、库存自愈、扩展和生产化取舍；
+- [性能测试报告](docs/performance-test-2026-11-01.md)：多买家压测、瓶颈定位过程与优化前后对比（[早期单用户报告](docs/performance-test-2026-08-12.md)）；
+- [面试追问手册](docs/interview-guide.md)：组件选择、边界与故障处理；
+- [简历项目描述](docs/resume.md)：可直接使用、每条都有代码和测试佐证的描述；
+- [OpenAPI 契约](docs/openapi.yaml)：主要外部接口定义。
 
-请不要在未实际压测前声称具体 QPS。先运行 [k6 脚本](load-test/seckill-hot-key.js)，将机器配置、并发数、成功率、P95/P99 与数据库库存核对结果记录下来，再写进简历。
+所有性能数字都依赖机器、Docker 资源和参数，请在自己的环境运行 `load-test/run-suite.sh` 后再引用，并保留“本机 Docker 单实例”等限定条件。
+
+## License
+
+[MIT](LICENSE)
