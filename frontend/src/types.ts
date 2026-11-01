@@ -207,3 +207,58 @@ export interface CampaignInput {
   startsAt: string;
   endsAt: string;
 }
+
+export type StockState =
+  | "CONSISTENT"
+  | "DRIFT_OBSERVED"
+  | "REPAIRED"
+  | "PENDING_COMPENSATION"
+  | "CAS_CONFLICT"
+  | "MISSING_KEY";
+
+export interface CampaignStock {
+  campaignId: number;
+  totalStock: number;
+  databaseStock: number;
+  redisStock: number | null;
+  drift: number | null;
+  pendingCompensations: number;
+  state: StockState;
+}
+
+export interface ReconciliationReport {
+  checkedAt: string;
+  quietWindowSeconds: number;
+  campaigns: number;
+  consistent: number;
+  drifting: number;
+  repaired: number;
+  items: CampaignStock[];
+}
+
+export interface CompensationTask {
+  id: number;
+  orderNo: string;
+  campaignId: number;
+  userId: number;
+  quantity: number;
+  reason: "ORDER_WRITE_FAILED" | "PAYMENT_TIMEOUT" | "CUSTOMER_CANCELLED" | "REFUND_APPROVED";
+  status: "PENDING" | "DONE" | "FAILED";
+  outcome: "RESTORED" | "NOOP" | null;
+  retryCount: number;
+  nextAttemptAt: string;
+  lastError: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface ReconciliationLog {
+  id: number;
+  campaignId: number;
+  databaseStock: number;
+  redisStockBefore: number;
+  redisStockAfter: number;
+  drift: number;
+  triggerSource: "SCHEDULED" | "MANUAL";
+  createdAt: string;
+}

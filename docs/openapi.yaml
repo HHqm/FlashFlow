@@ -365,6 +365,60 @@ paths:
         - {name: variantId, in: path, required: true, schema: {type: integer, format: int64}}
       responses:
         "200": {description: SKU list price changed}
+  /api/v1/admin/inventory/reconciliation:
+    get:
+      tags: [Inventory]
+      operationId: inspectStockReconciliation
+      summary: Read-only comparison of Redis stock and MySQL stock for active campaigns
+      security: [{bearerAuth: []}]
+      responses:
+        "200":
+          description: Per-campaign stock state; never changes Redis
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ReconciliationReportEnvelope"}
+    post:
+      tags: [Inventory]
+      operationId: runStockReconciliation
+      summary: Run one reconciliation pass now
+      description: >
+        Drift is only repaired when the same Redis value and campaign row version have been
+        observed for a whole quiet window; the repair is a Lua compare-and-set.
+      security: [{bearerAuth: []}]
+      responses:
+        "200":
+          description: Report after this pass, including repaired campaigns
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ReconciliationReportEnvelope"}
+  /api/v1/admin/inventory/reconciliation/logs:
+    get:
+      tags: [Inventory]
+      operationId: listStockRepairs
+      summary: Latest 50 audited Redis stock repairs
+      security: [{bearerAuth: []}]
+      responses:
+        "200": {description: Repair audit records with Redis value before and after}
+  /api/v1/admin/inventory/compensations:
+    get:
+      tags: [Inventory]
+      operationId: listStockCompensations
+      summary: Latest 100 durable Redis compensation tasks
+      security: [{bearerAuth: []}]
+      responses:
+        "200": {description: Compensation tasks with status, outcome and last error}
+  /api/v1/admin/inventory/compensations/{taskId}/retry:
+    post:
+      tags: [Inventory]
+      operationId: retryStockCompensation
+      summary: Reset a FAILED compensation task and run it immediately
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: taskId, in: path, required: true, schema: {type: integer, format: int64}}
+      responses:
+        "200": {description: Task after the retry attempt}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
 components:
   securitySchemes:
     bearerAuth:
@@ -443,6 +497,33 @@ components:
         detailAddress: {type: string, maxLength: 255}
         postalCode: {type: string, maxLength: 20}
         defaultAddress: {type: boolean, default: false}
+    ReconciliationReportEnvelope:
+      type: object
+      properties:
+        code: {type: string, const: OK}
+        data:
+          type: object
+          properties:
+            checkedAt: {type: string, format: date-time}
+            quietWindowSeconds: {type: integer, format: int64}
+            campaigns: {type: integer}
+            consistent: {type: integer}
+            drifting: {type: integer}
+            repaired: {type: integer}
+            items:
+              type: array
+              items:
+                type: object
+                properties:
+                  campaignId: {type: integer, format: int64}
+                  totalStock: {type: integer}
+                  databaseStock: {type: integer}
+                  redisStock: {type: [integer, "null"]}
+                  drift: {type: [integer, "null"], description: Redis minus MySQL}
+                  pendingCompensations: {type: integer, format: int64}
+                  state:
+                    type: string
+                    enum: [CONSISTENT, DRIFT_OBSERVED, REPAIRED, PENDING_COMPENSATION, CAS_CONFLICT, MISSING_KEY]
     ErrorEnvelope:
       type: object
       properties:

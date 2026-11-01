@@ -77,6 +77,10 @@ public class ShippingAddressEntity {
     }
 
     public String fullAddress() {
+        return fullAddress(province, city, district, detailAddress);
+    }
+
+    static String fullAddress(String province, String city, String district, String detailAddress) {
         return String.join(" ", province, city, district, detailAddress);
     }
 

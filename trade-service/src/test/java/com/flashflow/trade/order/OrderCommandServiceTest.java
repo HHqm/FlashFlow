@@ -17,6 +17,8 @@ import com.flashflow.common.event.DomainEvent;
 import com.flashflow.trade.campaign.CampaignRepository;
 import com.flashflow.trade.common.BusinessException;
 import com.flashflow.trade.common.ErrorCode;
+import com.flashflow.trade.inventory.StockCompensationReason;
+import com.flashflow.trade.inventory.StockCompensationService;
 import com.flashflow.trade.outbox.OutboxService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -40,6 +42,9 @@ class OrderCommandServiceTest {
     @Mock
     private OutboxService outboxService;
 
+    @Mock
+    private StockCompensationService stockCompensationService;
+
     private OrderCommandService commandService;
 
     @BeforeEach
@@ -48,6 +53,7 @@ class OrderCommandServiceTest {
                 orderRepository,
                 campaignRepository,
                 outboxService,
+                stockCompensationService,
                 Duration.ofMinutes(15));
     }
 
@@ -113,6 +119,36 @@ class OrderCommandServiceTest {
                 .isInstanceOfSatisfying(BusinessException.class, exception ->
                         assertThat(exception.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
         assertThat(order.getStatus()).isEqualTo(OrderStatus.SHIPPED);
+    }
+
+    @Test
+    void timeoutCancellationRestoresMysqlStockAndSchedulesRedisCompensation() {
+        OrderEntity order = orderCreatedMinutesAgo(16);
+        when(orderRepository.findByOrderNo(ORDER_NO)).thenReturn(Optional.of(order));
+
+        boolean cancelled = commandService.cancelIfExpired(
+                ORDER_NO, Instant.now().minus(15, ChronoUnit.MINUTES));
+
+        assertThat(cancelled).isTrue();
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.CANCELLED);
+        verify(campaignRepository).incrementStock(10L, 1);
+        verify(stockCompensationService).scheduleAfterCommit(
+                order.stockReservation(), StockCompensationReason.PAYMENT_TIMEOUT);
+    }
+
+    @Test
+    void timeoutCancellationSkipsOrdersThatWerePaidMeanwhile() {
+        OrderEntity order = orderCreatedMinutesAgo(16);
+        order.pay(Instant.now());
+        when(orderRepository.findByOrderNo(ORDER_NO)).thenReturn(Optional.of(order));
+
+        boolean cancelled = commandService.cancelIfExpired(
+                ORDER_NO, Instant.now().minus(15, ChronoUnit.MINUTES));
+
+        assertThat(cancelled).isFalse();
+        verify(campaignRepository, never()).incrementStock(10L, 1);
+        verify(stockCompensationService, never()).scheduleAfterCommit(
+                ArgumentMatchers.any(), ArgumentMatchers.any());
     }
 
     private static OrderEntity orderCreatedMinutesAgo(int minutes) {

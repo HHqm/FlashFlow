@@ -106,5 +106,25 @@ Authorization: Bearer {{token}}
 GET {{notification}}/internal/notifications?userId=1
 
 ### 强制重建活动 Redis 库存（管理员）
-POST {{gateway}}/api/v1/campaigns/{{campaignId}}/warmup
+POST {{gateway}}/api/v1/admin/campaigns/{{campaignId}}/warmup
+Authorization: Bearer {{adminToken}}
+
+### 只读检查 Redis 与 MySQL 库存是否一致（管理员）
+GET {{gateway}}/api/v1/admin/inventory/reconciliation
+Authorization: Bearer {{adminToken}}
+
+### 立即执行一次库存对账；同一漂移需在静默窗口内保持不变才会被 CAS 修复（管理员）
+POST {{gateway}}/api/v1/admin/inventory/reconciliation
+Authorization: Bearer {{adminToken}}
+
+### 查看库存修复审计日志（管理员）
+GET {{gateway}}/api/v1/admin/inventory/reconciliation/logs
+Authorization: Bearer {{adminToken}}
+
+### 查看 Redis 库存补偿任务（管理员）
+GET {{gateway}}/api/v1/admin/inventory/compensations
+Authorization: Bearer {{adminToken}}
+
+### 手动重试耗尽重试次数的补偿任务（管理员）
+POST {{gateway}}/api/v1/admin/inventory/compensations/1/retry
 Authorization: Bearer {{adminToken}}

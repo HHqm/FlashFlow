@@ -13,6 +13,7 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_0900_ai_ci
       - --default-time-zone=+00:00
+      - --innodb-buffer-pool-size=${MYSQL_BUFFER_POOL_SIZE:-512M}
     ports:
       - "${MYSQL_PORT:-3306}:3306"
     volumes:
@@ -79,7 +80,7 @@ services:
       context: .
       dockerfile: trade-service/Dockerfile
     environment:
-      MYSQL_URL: jdbc:mysql://mysql:3306/flashflow_trade?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&rewriteBatchedStatements=true&cachePrepStmts=true&prepStmtCacheSize=250&prepStmtCacheSqlLimit=2048&useServerPrepStmts=true
+      MYSQL_URL: jdbc:mysql://mysql:3306/flashflow_trade?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&rewriteBatchedStatements=true&cachePrepStmts=true&prepStmtCacheSize=250&prepStmtCacheSqlLimit=2048&useServerPrepStmts=true&useLocalSessionState=true&cacheServerConfiguration=true&cacheResultSetMetadata=true&maintainTimeStats=false
       MYSQL_USER: flashflow
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-flashflow_app}
       REDIS_HOST: redis
@@ -192,6 +193,7 @@ services:
       - --storage.tsdb.retention.time=7d
     volumes:
       - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"

@@ -6,7 +6,7 @@ FlashFlow 高并发限量购与订单履约平台
 
 ## 技术栈
 
-Java 21、Spring Boot 4.1、Spring Cloud Gateway、Spring Security、MySQL 8.4、Redis 8、Lua、Kafka 4.3、JPA、Flyway、Vue 3、TypeScript、Docker Compose、Prometheus、JUnit 5
+Java 21、Spring Boot 4.1、Spring Cloud Gateway、Spring Security、MySQL 8.4、Redis 8、Lua、Kafka 4.3、JPA、Flyway、Vue 3、TypeScript、Docker Compose、Prometheus、JUnit 5、Testcontainers、k6
 
 ## 项目描述
 
@@ -21,8 +21,11 @@ Java 21、Spring Boot 4.1、Spring Cloud Gateway、Spring Security、MySQL 8.4�
 - 使用 Transactional Outbox 将订单与领域事件纳入同一 MySQL 事务，通过 Kafka `acks=all`、幂等 Producer、指数退避和 DLT 实现至少一次可靠投递；
 - 实现 `待支付→已支付→退款中→已退款` 订单状态机和独立售后申请模型，支持主动取消、15 分钟超时关单、退款审批及审计意见，并在事务提交后通过带订单号校验的 Lua 脚本补偿 Redis；
 - 建立“已支付订单才能评价、每单一次”的已购评价约束，支持 1～5 星评分、前台平均分聚合、后台显隐审核和商家回复；
-- 搭建 Spring Cloud Gateway 统一入口，实现 JWT 双重校验、Redis 令牌桶限流和 Trace ID 透传，使用 Actuator/Prometheus 暴露 JVM、HTTP 与业务指标；
-- 采用 Maven 多模块、Flyway 版本化建表、Docker Compose 一键环境和 GitHub Actions 自动测试，保证项目可复现交付。
+- 设计 Redis 库存自愈闭环：将取消、超时关单、退款后的缓存回补建模为与 MySQL 库存回补同事务落库的补偿任务，依托 Lua 按订单号幂等实现提交后即时执行、指数退避重试和后台人工重试；再以“行版本号与 Redis 值在静默窗口内不变”识别真实漂移，用 Lua CAS 修复并写审计日志，解决补偿失败后 Redis 永久偏少、活动提前售罄的问题；
+- 基于 Testcontainers 搭建与生产同版本的 MySQL、Redis、Kafka 集成测试，验证 120 个买家并发抢 30 件恰好成交 30 单、同一幂等键并发 40 次只生成 1 笔订单、全部订单事件以订单号为 key 进入 Kafka，并通过 `docker pause` 注入 Redis 故障，验证补偿任务恢复后库存只回补一次；
+- 在“零静默窗口激进对账 + 150 并发买家”的最坏情况测试中发现：Redis 偏大时合并批次总量超过剩余库存会整批失败，40 件仅售出 12 件；引入 `SOLD_OUT` 二分拆批重试后全部售出且无超卖；
+- 搭建 Spring Cloud Gateway 统一入口，实现 JWT 双重校验、Redis 令牌桶限流和 Trace ID 透传，使用 Actuator/Prometheus 暴露 JVM、HTTP 与业务指标，并为连接池等待、写队列拒绝、Outbox 投递失败、补偿积压与库存漂移配置分级告警规则；
+- 采用 Maven 多模块、Flyway 版本化建表、Docker Compose 一键环境，GitHub Actions 分别执行单元测试、Testcontainers 集成测试和前端构建，保证项目可复现交付。
 
 ## 性能实测
 
@@ -30,4 +33,18 @@ Java 21、Spring Boot 4.1、Spring Cloud Gateway、Spring Security、MySQL 8.4�
 
 ## 根据年限裁剪
 
-应届/初级保留 3-4 条，重点讲清 Lua、防超卖、Outbox 和幂等；有经验岗位可增加故障模型、容量规划、索引设计、监控指标和演进到 CDC/Kubernetes 的取舍。
+应届/初级保留 3-4 条，重点讲清 Lua、防超卖、Outbox 和幂等；有经验岗位可增加库存自愈、故障注入测试、容量规划、监控告警和演进到 CDC/Kubernetes 的取舍。
+
+推荐组合（每条都能在代码和测试里找到证据）：
+
+| 岗位侧重 | 建议保留 |
+| --- | --- |
+| 高并发 / 交易 | Lua 原子预占、单写队列微批量、性能实测、二分拆批 |
+| 分布式一致性 | Outbox + Inbox、三层幂等、库存自愈闭环 |
+| 工程质量 | Testcontainers 集成测试与故障注入、告警规则、CI |
+
+## 可展开的两个难点
+
+**补偿失败后的库存泄漏。** 取消订单时 MySQL 已回补，但 Redis 补偿只打日志，一次 Redis 抖动就会让活动永久少卖。做法是参照 Outbox 把补偿变成同事务落库的任务，靠 Lua 的订单号校验保证重试幂等；对账作为最后防线，用版本号和静默窗口区分在途预占与真实泄漏，用 CAS 避免与并发预占互相覆盖。结果：故障注入测试中 Redis 冻结期间取消的订单，在恢复后库存恰好回补一次。
+
+**用测试找到的少卖问题。** 为验证对账“修错了也不会超卖”，写了零静默窗口的最坏情况测试，结果确实没超卖，但 40 件只卖出 12 件。日志显示 Redis 被修到偏大后，合并批次的总扣减量超过剩余库存，条件更新整批失败。改为批次 `SOLD_OUT` 时二分拆批重试，正常路径零开销，异常路径最多 O(log n) 次事务，测试改为断言 40 件全部售出。

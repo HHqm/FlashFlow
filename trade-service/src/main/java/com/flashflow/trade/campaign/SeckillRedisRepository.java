@@ -3,6 +3,7 @@ package com.flashflow.trade.campaign;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.OptionalInt;
 
 import com.flashflow.trade.common.BusinessException;
 import com.flashflow.trade.common.ErrorCode;
@@ -20,6 +21,7 @@ public class SeckillRedisRepository {
     private final StringRedisTemplate redisTemplate;
     private final DefaultRedisScript<String> reserveScript;
     private final DefaultRedisScript<Long> compensateScript;
+    private final DefaultRedisScript<Long> stockReconcileScript;
     private final DefaultRedisScript<Long> rateLimitScript;
     private final int requestsPerSecond;
     private final Counter reservedCounter;
@@ -29,6 +31,7 @@ public class SeckillRedisRepository {
             StringRedisTemplate redisTemplate,
             DefaultRedisScript<String> seckillReserveScript,
             DefaultRedisScript<Long> seckillCompensateScript,
+            DefaultRedisScript<Long> stockReconcileScript,
             DefaultRedisScript<Long> rateLimitScript,
             @Value("${flashflow.seckill.requests-per-second:5}") int requestsPerSecond,
             MeterRegistry meterRegistry
@@ -36,6 +39,7 @@ public class SeckillRedisRepository {
         this.redisTemplate = redisTemplate;
         this.reserveScript = seckillReserveScript;
         this.compensateScript = seckillCompensateScript;
+        this.stockReconcileScript = stockReconcileScript;
         this.rateLimitScript = rateLimitScript;
         this.requestsPerSecond = requestsPerSecond;
         this.reservedCounter = meterRegistry.counter("flashflow.seckill.reserved");
@@ -121,18 +125,22 @@ public class SeckillRedisRepository {
         }
     }
 
-    public void compensate(long campaignId, long userId, String idempotencyKey, String orderNo) {
-        compensate(campaignId, userId, idempotencyKey, orderNo, 1);
+    public boolean compensate(long campaignId, long userId, String idempotencyKey, String orderNo) {
+        return compensate(campaignId, userId, idempotencyKey, orderNo, 1);
     }
 
-    public void compensate(
+    /**
+     * Returns {@code true} when the reservation was found and returned, {@code false} when it had
+     * already been returned or expired. Safe to call repeatedly for the same order.
+     */
+    public boolean compensate(
             long campaignId,
             long userId,
             String idempotencyKey,
             String orderNo,
             int quantity
     ) {
-        redisTemplate.execute(
+        Long restored = redisTemplate.execute(
                 compensateScript,
                 List.of(
                         CampaignCacheInitializer.stockKey(campaignId),
@@ -140,6 +148,30 @@ public class SeckillRedisRepository {
                         requestKey(userId, idempotencyKey)),
                 orderNo,
                 Integer.toString(quantity));
+        return restored != null && restored == 1L;
+    }
+
+    public OptionalInt readStock(long campaignId) {
+        String value = redisTemplate.opsForValue().get(CampaignCacheInitializer.stockKey(campaignId));
+        return value == null ? OptionalInt.empty() : OptionalInt.of(Integer.parseInt(value));
+    }
+
+    public StockRepairResult repairStock(long campaignId, int expectedStock, int targetStock) {
+        Long result = redisTemplate.execute(
+                stockReconcileScript,
+                List.of(CampaignCacheInitializer.stockKey(campaignId)),
+                Integer.toString(expectedStock),
+                Integer.toString(targetStock));
+        if (result == null || result == -1L) {
+            return StockRepairResult.MISSING;
+        }
+        return result == 1L ? StockRepairResult.REPAIRED : StockRepairResult.CONFLICT;
+    }
+
+    public enum StockRepairResult {
+        REPAIRED,
+        CONFLICT,
+        MISSING
     }
 
     private static String purchaserKey(long campaignId, long userId) {

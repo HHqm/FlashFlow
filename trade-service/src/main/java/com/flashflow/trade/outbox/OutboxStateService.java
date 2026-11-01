@@ -25,6 +25,11 @@ public class OutboxStateService {
     }
 
     @Transactional
+    public int purgePublishedBefore(Instant cutoff, int chunkSize) {
+        return outboxRepository.deletePublishedBefore(cutoff, chunkSize);
+    }
+
+    @Transactional
     public void markFailed(UUID eventId, String error, int maxRetries) {
         outboxRepository.findById(eventId)
                 .ifPresent(event -> event.markFailed(error, maxRetries, Instant.now()));

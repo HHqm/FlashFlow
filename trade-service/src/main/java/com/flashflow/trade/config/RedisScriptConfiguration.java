@@ -25,6 +25,14 @@ public class RedisScriptConfiguration {
     }
 
     @Bean
+    DefaultRedisScript<Long> stockReconcileScript() {
+        var script = new DefaultRedisScript<Long>();
+        script.setLocation(new ClassPathResource("lua/stock_reconcile.lua"));
+        script.setResultType(Long.class);
+        return script;
+    }
+
+    @Bean
     DefaultRedisScript<Long> rateLimitScript() {
         var script = new DefaultRedisScript<Long>();
         script.setLocation(new ClassPathResource("lua/rate_limit.lua"));

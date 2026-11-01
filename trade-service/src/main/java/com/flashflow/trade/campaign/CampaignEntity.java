@@ -126,6 +126,10 @@ public class CampaignEntity {
         return endsAt;
     }
 
+    public long getVersion() {
+        return version;
+    }
+
     public CampaignStatus getStatus() {
         return status;
     }

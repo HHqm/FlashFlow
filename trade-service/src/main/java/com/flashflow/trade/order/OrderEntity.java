@@ -5,6 +5,7 @@ import java.time.Instant;
 
 import com.flashflow.trade.common.BusinessException;
 import com.flashflow.trade.common.ErrorCode;
+import com.flashflow.trade.inventory.StockReservation;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -13,14 +14,24 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.TableGenerator;
 import jakarta.persistence.Version;
 
 @Entity
 @Table(name = "trade_order")
 public class OrderEntity {
 
+    // IDENTITY keys force Hibernate to insert one row per round trip; a pooled table generator
+    // hands out ids in blocks, so a whole write batch is flushed as one multi-row INSERT.
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @GeneratedValue(strategy = GenerationType.TABLE, generator = "trade_order_id")
+    @TableGenerator(
+            name = "trade_order_id",
+            table = "id_generator",
+            pkColumnName = "name",
+            valueColumnName = "next_val",
+            pkColumnValue = "trade_order",
+            allocationSize = 500)
     private Long id;
 
     @Column(name = "order_no", nullable = false, unique = true, length = 40)
@@ -304,4 +315,8 @@ public class OrderEntity {
     public String getTrackingNo() { return trackingNo; }
     public Instant getShippedAt() { return shippedAt; }
     public Instant getReceivedAt() { return receivedAt; }
+
+    public StockReservation stockReservation() {
+        return new StockReservation(campaignId, userId, idempotencyKey, orderNo, quantity);
+    }
 }

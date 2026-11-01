@@ -18,5 +18,33 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: maven
+      # Unit tests run in Surefire; *IT classes run in Failsafe against real MySQL, Redis and
+      # Kafka containers started by Testcontainers (Docker is preinstalled on GitHub runners).
       - name: Verify
         run: sh ./mvnw --batch-mode --no-transfer-progress clean verify
+      - name: Upload test and coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            */target/surefire-reports/
+            */target/failsafe-reports/
+            */target/site/jacoco/
+            */target/site/jacoco-it/
+          if-no-files-found: ignore
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build

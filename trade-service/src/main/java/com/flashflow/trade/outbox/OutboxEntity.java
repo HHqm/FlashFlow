@@ -9,11 +9,15 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Lob;
+import jakarta.persistence.PostLoad;
+import jakarta.persistence.PostPersist;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
+import org.springframework.data.domain.Persistable;
 
 @Entity
 @Table(name = "outbox_event")
-public class OutboxEntity {
+public class OutboxEntity implements Persistable<UUID> {
 
     @Id
     @Column(name = "event_id", nullable = false, updatable = false)
@@ -48,6 +52,11 @@ public class OutboxEntity {
     @Column(name = "published_at")
     private Instant publishedAt;
 
+    // The id is assigned by the application, so without this Spring Data would treat every new
+    // event as existing and merge it, costing one SELECT per event inside the hot write batch.
+    @Transient
+    private boolean persisted;
+
     protected OutboxEntity() {
     }
 
@@ -66,6 +75,22 @@ public class OutboxEntity {
         this.retryCount = 0;
         this.nextAttemptAt = createdAt;
         this.createdAt = createdAt;
+    }
+
+    @Override
+    public UUID getId() {
+        return eventId;
+    }
+
+    @Override
+    public boolean isNew() {
+        return !persisted;
+    }
+
+    @PostLoad
+    @PostPersist
+    void markPersisted() {
+        persisted = true;
     }
 
     public UUID getEventId() {

@@ -1,0 +1,103 @@
+groups:
+  - name: flashflow-availability
+    rules:
+      - alert: FlashFlowServiceDown
+        expr: up{job=~"gateway-service|trade-service|notification-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} 无法抓取指标"
+          description: "Prometheus 连续 1 分钟无法访问 {{ $labels.instance }}。"
+
+      - alert: FlashFlowHigh5xxRatio
+        expr: |
+          sum by (application) (rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+            / sum by (application) (rate(http_server_requests_seconds_count[5m])) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.application }} 5xx 比例超过 1%"
+
+      - alert: FlashFlowDatabasePoolSaturated
+        expr: max by (application) (hikaricp_connections_pending) > 5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.application }} 有 {{ $value }} 个请求在等待数据库连接"
+          description: "连接池等待持续 1 分钟，压测中这是 5xx 出现前的先行信号。"
+
+  - name: flashflow-order-pipeline
+    rules:
+      - alert: FlashFlowOrderWriteQueueRejecting
+        expr: sum(rate(flashflow_order_write_rejected_total[1m])) > 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "下单写队列持续拒绝请求"
+          description: "有界单写队列已满，Redis 预占会被补偿，但用户看到 429。需要扩容或限流。"
+
+      - alert: FlashFlowOutboxPublishFailing
+        expr: sum(increase(flashflow_outbox_failed_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbox 投递 Kafka 持续失败"
+          description: "事件仍保存在 outbox_event 并按指数退避重试，检查 Kafka 可用性。"
+
+  - name: flashflow-inventory
+    rules:
+      - alert: FlashFlowStockCompensationBacklog
+        expr: max(flashflow_stock_compensation_pending) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} 个 Redis 库存补偿任务待重试超过 5 分钟"
+          description: "MySQL 库存已正确，Redis 暂时偏少只会少卖。通常意味着 Redis 不可用。"
+
+      - alert: FlashFlowStockCompensationDead
+        expr: max(flashflow_stock_compensation_dead) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "存在耗尽重试次数的库存补偿任务"
+          description: "在运营后台「库存对账」中查看失败原因，修复后手动重试。"
+
+      - alert: FlashFlowStockCompensationLost
+        expr: sum(increase(flashflow_stock_compensation_lost_total[15m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "库存补偿任务未能落库"
+          description: "Redis 与 MySQL 同时故障，补偿只能依赖定时对账收敛。"
+
+      - alert: FlashFlowStockDrift
+        expr: max(flashflow_stock_reconciliation_drifting) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} 个活动的 Redis 库存与 MySQL 持续不一致"
+          description: "对账会在静默窗口后自动修复；若持续存在，检查是否缺失缓存 key 或存在长事务。"
+
+      - alert: FlashFlowStockKeyMissing
+        expr: max(flashflow_stock_reconciliation_missing) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "进行中活动的 Redis 库存 key 丢失"
+          description: "系统会拒绝下单而不是绕过 Redis。确认买家限购数据后在后台执行预热。"
+
+      - alert: FlashFlowStockRepaired
+        expr: sum(increase(flashflow_stock_reconciliation_repaired_total[15m])) > 0
+        labels:
+          severity: info
+        annotations:
+          summary: "对账任务修复了 Redis 库存漂移"
+          description: "修复本身是安全的，但说明上游补偿链路有遗漏，需要排查 stock_reconciliation_log。"

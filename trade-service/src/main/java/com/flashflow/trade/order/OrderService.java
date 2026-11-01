@@ -9,6 +9,8 @@ import com.flashflow.trade.address.ShippingAddressSnapshot;
 import com.flashflow.trade.campaign.SeckillRedisRepository;
 import com.flashflow.trade.common.BusinessException;
 import com.flashflow.trade.common.ErrorCode;
+import com.flashflow.trade.inventory.StockCompensationService;
+import com.flashflow.trade.inventory.StockReservation;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
@@ -27,6 +29,7 @@ public class OrderService {
     private final SeckillRedisRepository seckillRedisRepository;
     private final OrderWriteCoordinator writeCoordinator;
     private final ShippingAddressService shippingAddressService;
+    private final StockCompensationService stockCompensationService;
     private final Counter createdCounter;
 
     public OrderService(
@@ -36,6 +39,7 @@ public class OrderService {
             SeckillRedisRepository seckillRedisRepository,
             OrderWriteCoordinator writeCoordinator,
             ShippingAddressService shippingAddressService,
+            StockCompensationService stockCompensationService,
             MeterRegistry meterRegistry
     ) {
         this.campaignContextService = campaignContextService;
@@ -44,6 +48,7 @@ public class OrderService {
         this.seckillRedisRepository = seckillRedisRepository;
         this.writeCoordinator = writeCoordinator;
         this.shippingAddressService = shippingAddressService;
+        this.stockCompensationService = stockCompensationService;
         this.createdCounter = meterRegistry.counter("flashflow.orders.created");
     }
 
@@ -147,6 +152,10 @@ public class OrderService {
                 log.error("Redis stock compensation failed, campaignId={}, orderNo={}",
                         campaign.campaignId(), orderNo, compensationFailure);
                 exception.addSuppressed(compensationFailure);
+                stockCompensationService.recordFailedWrite(
+                        new StockReservation(
+                                campaign.campaignId(), userId, idempotencyKey, orderNo, quantity),
+                        exception);
             }
             throw exception;
         }

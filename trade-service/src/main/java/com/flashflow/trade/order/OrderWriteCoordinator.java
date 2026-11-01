@@ -31,6 +31,7 @@ public class OrderWriteCoordinator {
     private final List<ArrayBlockingQueue<PendingOrder>> queues;
     private final List<Thread> workers = new ArrayList<>();
     private final Counter rejectedCounter;
+    private final Counter splitCounter;
     private final DistributionSummary batchSizeSummary;
     private volatile boolean running;
 
@@ -52,6 +53,7 @@ public class OrderWriteCoordinator {
             queues.add(new ArrayBlockingQueue<>(this.queueCapacity));
         }
         this.rejectedCounter = meterRegistry.counter("flashflow.order.write.rejected");
+        this.splitCounter = meterRegistry.counter("flashflow.order.write.batch.split");
         this.batchSizeSummary = DistributionSummary.builder("flashflow.order.write.batch.size")
                 .minimumExpectedValue(1.0)
                 .maximumExpectedValue((double) this.maxBatchSize)
@@ -166,10 +168,17 @@ public class OrderWriteCoordinator {
                     ignored -> new ArrayList<>())
                     .add(pending);
         }
-        groups.values().forEach(this::persistGroup);
+        groups.values().forEach(group -> persistGroup(group, new SoldOutBound()));
     }
 
-    private void persistGroup(List<PendingOrder> group) {
+    private void persistGroup(List<PendingOrder> group, SoldOutBound bound) {
+        int quantity = group.stream().mapToInt(pending -> pending.command().quantity()).sum();
+        if (quantity >= bound.smallestRejected) {
+            // This worker is the only writer for the campaign, so stock can only have shrunk
+            // since MySQL rejected a smaller batch: skip the round trip.
+            fail(group, new BusinessException(ErrorCode.SOLD_OUT));
+            return;
+        }
         List<OrderWriteCommand> commands = group.stream()
                 .map(PendingOrder::command)
                 .toList();
@@ -179,9 +188,35 @@ public class OrderWriteCoordinator {
             for (int index = 0; index < group.size(); index++) {
                 group.get(index).result().complete(orders.get(index));
             }
+        } catch (BusinessException exception) {
+            if (exception.errorCode() != ErrorCode.SOLD_OUT) {
+                fail(group, exception);
+                return;
+            }
+            bound.smallestRejected = quantity;
+            if (group.size() == 1) {
+                fail(group, exception);
+                return;
+            }
+            // Redis admitted more than MySQL can fill, e.g. right after a cache re-warm or a
+            // reconciliation repair. The combined decrement fails as a whole, so split the batch
+            // and let the orders that still fit commit instead of rejecting all of them. With the
+            // bound above this costs O(log n) extra transactions, not O(n).
+            splitCounter.increment();
+            int middle = group.size() / 2;
+            persistGroup(group.subList(0, middle), bound);
+            persistGroup(group.subList(middle, group.size()), bound);
         } catch (RuntimeException exception) {
-            group.forEach(pending -> pending.result().completeExceptionally(exception));
+            fail(group, exception);
         }
+    }
+
+    private static void fail(List<PendingOrder> group, RuntimeException exception) {
+        group.forEach(pending -> pending.result().completeExceptionally(exception));
+    }
+
+    private static final class SoldOutBound {
+        private int smallestRejected = Integer.MAX_VALUE;
     }
 
     private record PendingOrder(

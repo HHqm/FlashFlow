@@ -3,6 +3,7 @@ package com.flashflow.common.event;
 import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Versioned integration-event envelope shared across service boundaries.
@@ -23,6 +24,18 @@ public record DomainEvent(
         Map<String, Object> payload
 ) {
     public static DomainEvent create(String eventType, String aggregateId, Map<String, Object> payload) {
-        return new DomainEvent(UUID.randomUUID(), eventType, aggregateId, Instant.now(), 1, Map.copyOf(payload));
+        return new DomainEvent(timeOrderedId(), eventType, aggregateId, Instant.now(), 1, Map.copyOf(payload));
+    }
+
+    /**
+     * RFC 9562 version 7 UUID: a 48-bit millisecond timestamp followed by random bits. Both the
+     * Outbox and the consumer Inbox use the event id as their InnoDB primary key, so time-ordered
+     * ids append to the end of the clustered index instead of splitting random pages.
+     */
+    public static UUID timeOrderedId() {
+        ThreadLocalRandom random = ThreadLocalRandom.current();
+        long mostSignificant = (System.currentTimeMillis() << 16) | 0x7000L | (random.nextLong() & 0x0FFFL);
+        long leastSignificant = (random.nextLong() & 0x3FFF_FFFF_FFFF_FFFFL) | 0x8000_0000_0000_0000L;
+        return new UUID(mostSignificant, leastSignificant);
     }
 }

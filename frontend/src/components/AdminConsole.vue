@@ -23,6 +23,7 @@ import {
   RefreshCw,
   RotateCcw,
   Save,
+  Scale,
   Search,
   Send,
   Settings2,
@@ -49,6 +50,7 @@ import type {
   Session,
   VariantInput,
 } from "../types";
+import InventoryPanel from "./InventoryPanel.vue";
 
 const props = defineProps<{
   session: Session;
@@ -84,7 +86,7 @@ const emit = defineEmits<{
   shipOrder: [orderNo: string, carrier: string, trackingNo: string];
 }>();
 
-type AdminTab = "overview" | "products" | "campaigns" | "orders" | "reviews" | "categories";
+type AdminTab = "overview" | "products" | "campaigns" | "inventory" | "orders" | "reviews" | "categories";
 const activeTab = ref<AdminTab>("overview");
 const expandedProducts = reactive<Record<number, boolean>>({});
 const stockDrafts = reactive<Record<number, number>>({});
@@ -303,6 +305,13 @@ function statusText(status: string) {
           <b>{{ campaigns.length }}</b>
         </button>
         <button
+          :class="{ active: activeTab === 'inventory' }"
+          data-testid="nav-inventory"
+          @click="activeTab = 'inventory'"
+        >
+          <Scale :size="18" /> 库存对账
+        </button>
+        <button
           :class="{ active: activeTab === 'orders' }"
           data-testid="nav-orders"
           @click="activeTab = 'orders'"
@@ -356,6 +365,7 @@ function statusText(status: string) {
                   overview: "运营概览",
                   products: "商品与 SKU 管理",
                   campaigns: "秒杀活动管理",
+                  inventory: "库存对账与补偿",
                   orders: "订单与售后管理",
                   reviews: "商品评价管理",
                   categories: "商品分类管理",
@@ -575,6 +585,12 @@ function statusText(status: string) {
             </div>
           </div>
         </section>
+
+        <InventoryPanel
+          v-else-if="activeTab === 'inventory'"
+          :token="session.accessToken"
+          :campaigns="campaigns"
+        />
 
         <section v-else-if="activeTab === 'orders'" class="admin-orders">
           <div class="split-heading">

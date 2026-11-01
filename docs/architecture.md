@@ -61,7 +61,7 @@ WHERE id = :campaignId
 
 这避免了多次 Redis 命令之间的竞态。脚本只存订单号，不存完整订单，订单事实仍由 MySQL 管理。
 
-若后续数据库事务失败，`seckill_compensate.lua` 会先核对请求映射中的订单号，再按原购买数量恢复库存、回退用户累计购买量并删除本次幂等映射，防止错误补偿其他请求。
+若后续数据库事务失败，`seckill_compensate.lua` 会先核对请求映射中的订单号，再按原购买数量恢复库存、回退用户累计购买量并删除本次幂等映射，防止错误补偿其他请求。脚本返回 1 表示已回补、0 表示已回补过或预占已过期，因此可以安全地重复执行——这是后文“补偿任务可以反复重试”的前提。
 
 ## 5. 幂等边界
 
@@ -104,10 +104,46 @@ Inbox 的 `event_id` 是业务幂等键，不能使用 Kafka offset，因为事�
 
 1. 将订单置为 `CANCELLED`；
 2. 按订单购买数量恢复 MySQL 活动库存；
-3. 同事务写 `order.cancelled.v1` Outbox；
-4. 提交后执行 Redis 条件补偿。
+3. 同事务写 `order.cancelled.v1` Outbox 和一条 `stock_compensation_task`；
+4. 提交后立即执行 Redis 条件补偿，成功则把任务标记为 `DONE`。
 
-如果第 4 步失败，MySQL 库存正确而 Redis 暂时偏少，只会少卖，不会超卖。生产环境应再加库存对账任务，按活动周期校准 Redis。
+如果第 4 步失败，MySQL 库存正确而 Redis 暂时偏少，只会少卖，不会超卖；补偿任务仍为 `PENDING`，由重试任务继续执行，见下一节。
+
+## 8.1 库存自愈闭环
+
+旧版本在 Redis 补偿失败时只记日志，Redis 会永久少于 MySQL，活动提前“售罄”。现在按故障层级设置三道防线：
+
+```mermaid
+flowchart TB
+    Restore["MySQL 回补库存<br/>（取消 / 超时 / 退款）"] -->|同一事务| Task[("stock_compensation_task<br/>PENDING")]
+    Task -->|afterCommit 立即执行| Lua["seckill_compensate.lua<br/>按订单号幂等"]
+    Lua -->|成功| Done["DONE（RESTORED / NOOP）"]
+    Lua -->|Redis 超时| Retry["重试任务：指数退避<br/>2s、4s … 最长 300s"]
+    Retry --> Lua
+    Retry -->|超过 12 次| Dead["FAILED + 告警<br/>后台人工重试"]
+    WriteFail["下单事务失败且即时补偿也失败"] -->|REQUIRES_NEW 新事务| Task
+    WriteFail -->|MySQL 也不可用| Recon
+    Recon["对账任务（每 15s）"] -->|同一漂移在静默窗口内不变| CAS["stock_reconcile.lua<br/>Compare-And-Set"]
+```
+
+1. **补偿任务表**：取消、超时关单、退款通过都在回补 MySQL 库存的同一事务中写入补偿任务，与 Outbox 是同一种思路——把“提交后要做的事”变成持久化记录。下单事务本身失败且即时补偿也失败时，用 `REQUIRES_NEW` 新事务落库；
+2. **幂等重试**：任务按订单号唯一，Lua 脚本按订单号判断，重复执行返回 0（`NOOP`），所以重试任务、afterCommit 即时执行和人工重试即使并发也不会重复回补。集成测试证明了一个容易忽略的事实：客户端超时不等于 Redis 没有执行——冻结期间发出的命令可能在 Redis 恢复后照常执行，此时重试会落到 `NOOP`；
+3. **定时对账**：作为最后一道防线，对账任务比较进行中活动的 Redis 库存与 MySQL `remaining_stock`。
+
+对账的难点是“正常的在途预占”也会让 Redis 暂时小于 MySQL，不能一看到差异就修复：
+
+| 情况 | 处理 |
+| --- | --- |
+| Redis = MySQL | `CONSISTENT` |
+| 该活动仍有 `PENDING` 补偿任务 | `PENDING_COMPENSATION`，交给补偿任务 |
+| 第一次看到差异 | `DRIFT_OBSERVED`，记录（行版本号，Redis 值，时间） |
+| 静默窗口（默认 30s）内行版本号和 Redis 值都没变 | 用 `stock_reconcile.lua` 做 CAS：只有 Redis 仍等于观察值才写入 MySQL 值，并写入 `stock_reconciliation_log` |
+| CAS 时 Redis 已变化 | `CAS_CONFLICT`，本轮放弃 |
+| Redis key 缺失 | `MISSING_KEY` 只告警不自动预热，因为买家限购计数也随之丢失，需要运营确认 |
+
+行版本号由 `decrementStock`/`incrementStock` 每次加 1，因此“两次观察之间没有任何订单提交”可以被精确判断。即使静默窗口被误设为 0、修复发生在预占途中，错误也只会让 Redis 偏大，MySQL 条件扣减仍是防超卖屏障。
+
+这个最坏情况有专门的集成测试：150 个买家抢 40 件库存，同时对账任务以零静默窗口不停运行。首次运行发现了一个连带问题——Redis 偏大时，单写队列合并的批次总量可能超过剩余库存，条件更新整批失败，最终 40 件只卖出 12 件。修复方式是批次返回 `SOLD_OUT` 时二分拆批重试（`flashflow.order.write.batch.split` 计数），只有真正放不下的订单才失败。修复后该测试卖出全部 40 件，无超卖，流量停止后两轮对账即收敛。
 
 ## 9. 安全
 
@@ -164,6 +200,11 @@ stateDiagram-v2
 - `flashflow.outbox.failed`
 - `flashflow.notifications.consumed`
 - `flashflow.notifications.duplicates`
+- `flashflow.order.write.rejected`、`flashflow.order.write.batch.split`
+- `flashflow.stock.compensation.pending` / `dead` / `lost`
+- `flashflow.stock.reconciliation.drifting` / `missing` / `repaired`
+
+`docker/prometheus/alerts.yml` 为这些指标配置了告警规则：服务不可达、5xx 比例、连接池等待、写队列拒绝、Outbox 投递失败、补偿积压/耗尽/丢失、库存漂移、缓存 key 缺失和对账修复。规则区分 `critical`（需要人工介入，如补偿任务耗尽重试）与 `warning`（系统会自愈但需要关注）。
 
 生产环境可接入 OpenTelemetry，将 Trace ID 扩展为跨 Kafka 的 W3C Trace Context。
 
@@ -179,8 +220,27 @@ stateDiagram-v2
 ## 12. 已知边界
 
 - 示例使用单节点 MySQL、Redis、Kafka，展示应用设计而非中间件高可用部署；
-- Redis 锁用于减少重复 Outbox 扫描，正确性依赖消费者幂等，不依赖锁绝对可靠；
+- Redis 锁用于减少重复的 Outbox 扫描、补偿重试和对账扫描，正确性依赖消费者幂等、Lua 订单号校验和 CAS，不依赖锁绝对可靠；
+- 对账只校准活动库存 key；买家累计限购 key 由补偿任务回退，Redis 整体丢失后需要运营确认再预热；
 - 站内通知只落库，没有接第三方短信/邮件供应商；
 - 支付接口是业务状态模拟，不对接真实支付渠道；
 - 当前已覆盖秒杀交易、地址簿、地址快照、主动取消、单包裹发货/收货、退款审批和已购评价；尚未实现普通购物车、优惠券、真实支付网关和多包裹拆单；
 - 性能数字取决于机器、Docker 资源和参数，仓库不预置虚构指标。
+
+## 13. 测试策略
+
+| 层级 | 工具 | 覆盖内容 |
+| --- | --- | --- |
+| 单元测试（Surefire） | JUnit 5、Mockito、H2 | 状态机、限购、补偿任务退避、对账判定、批次拆分、事务写入顺序 |
+| 集成测试（Failsafe，`*IT`） | Testcontainers：MySQL 8.4、Redis 8.4、Kafka 4.3 | 真实 Flyway 迁移；HTTP → JWT → Lua → 单写队列 → MySQL → Outbox → Kafka 全链路 |
+| 压测 | k6 | 吞吐、延迟、热点售罄、幂等重放，见性能测试报告 |
+
+集成测试使用与 `compose.yml` 相同的镜像版本，主要场景：
+
+- 120 个买家并发抢 30 件：恰好 30 单成功，其余 `SOLD_OUT`，MySQL/Redis 库存均为 0，30 条 `order.created.v1` 以订单号为 key 进入 Kafka；
+- 同一幂等键并发 40 次：只生成 1 笔订单，在途重放返回 `REQUEST_PROCESSING`，事后重放返回同一订单；
+- **故障注入**：`docker pause` 冻结 Redis 后取消订单，MySQL 立即回补、补偿任务进入重试，Redis 恢复后任务完成且库存只回补一次；
+- 人为制造 3 件库存泄漏：首轮只观察不修复，第二轮 CAS 修复并写审计日志，之后继续正常售卖；
+- 零静默窗口的激进对账与 150 个并发买家同时运行：不超卖、不少卖，流量停止后收敛。
+
+本机没有 Docker 时，`@Testcontainers(disabledWithoutDocker = true)` 会跳过集成测试；GitHub Actions 运行器自带 Docker，CI 中始终执行。

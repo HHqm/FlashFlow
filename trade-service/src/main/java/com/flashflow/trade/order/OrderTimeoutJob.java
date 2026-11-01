@@ -3,7 +3,6 @@ package com.flashflow.trade.order;
 import java.time.Duration;
 import java.time.Instant;
 
-import com.flashflow.trade.campaign.SeckillRedisRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -22,18 +21,15 @@ public class OrderTimeoutJob {
 
     private final OrderRepository orderRepository;
     private final OrderCommandService commandService;
-    private final SeckillRedisRepository redisRepository;
     private final Duration paymentTimeout;
 
     public OrderTimeoutJob(
             OrderRepository orderRepository,
             OrderCommandService commandService,
-            SeckillRedisRepository redisRepository,
             @Value("${flashflow.order.payment-timeout:PT15M}") Duration paymentTimeout
     ) {
         this.orderRepository = orderRepository;
         this.commandService = commandService;
-        this.redisRepository = redisRepository;
         this.paymentTimeout = paymentTimeout;
     }
 
@@ -46,25 +42,12 @@ public class OrderTimeoutJob {
                         cutoff);
         for (OrderEntity order : candidates) {
             try {
-                commandService.cancelIfExpired(order.getOrderNo(), cutoff)
-                        .ifPresent(this::compensateRedis);
+                // Redis compensation is scheduled inside the cancel transaction and retried
+                // durably, so a Redis outage here no longer leaks reserved stock.
+                commandService.cancelIfExpired(order.getOrderNo(), cutoff);
             } catch (RuntimeException exception) {
                 log.error("Failed to cancel expired order, orderNo={}", order.getOrderNo(), exception);
             }
-        }
-    }
-
-    private void compensateRedis(OrderCommandService.CancelledOrder order) {
-        try {
-            redisRepository.compensate(
-                    order.campaignId(),
-                    order.userId(),
-                    order.idempotencyKey(),
-                    order.orderNo(),
-                    order.quantity());
-        } catch (RuntimeException exception) {
-            // DB stock is already restored. A Redis failure can only cause temporary underselling.
-            log.error("Cancelled order Redis compensation failed, orderNo={}", order.orderNo(), exception);
         }
     }
 }

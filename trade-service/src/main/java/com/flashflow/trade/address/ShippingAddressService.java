@@ -1,9 +1,6 @@
 package com.flashflow.trade.address;
 
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.locks.ReentrantLock;
 
 import com.flashflow.trade.common.BusinessException;
 import com.flashflow.trade.common.ErrorCode;
@@ -14,13 +11,14 @@ import org.springframework.transaction.annotation.Transactional;
 public class ShippingAddressService {
 
     private final ShippingAddressRepository repository;
-    private final ConcurrentMap<AddressCacheKey, ShippingAddressSnapshot> snapshotCache =
-            new ConcurrentHashMap<>();
-    private final ConcurrentMap<AddressCacheKey, ReentrantLock> snapshotLocks =
-            new ConcurrentHashMap<>();
+    private final ShippingAddressSnapshotReader snapshotReader;
 
-    public ShippingAddressService(ShippingAddressRepository repository) {
+    public ShippingAddressService(
+            ShippingAddressRepository repository,
+            ShippingAddressSnapshotReader snapshotReader
+    ) {
         this.repository = repository;
+        this.snapshotReader = snapshotReader;
     }
 
     @Transactional(readOnly = true)
@@ -39,7 +37,6 @@ public class ShippingAddressService {
                 userId,
                 withDefault(request, makeDefault));
         ShippingAddressEntity saved = repository.save(address);
-        evictUser(userId);
         return AddressDtos.AddressView.from(saved);
     }
 
@@ -55,7 +52,6 @@ public class ShippingAddressService {
             clearDefault(userId);
         }
         address.update(withDefault(request, makeDefault));
-        evictUser(userId);
         return AddressDtos.AddressView.from(address);
     }
 
@@ -64,7 +60,6 @@ public class ShippingAddressService {
         ShippingAddressEntity address = ownedAddress(userId, addressId);
         clearDefault(userId);
         address.markDefault(true);
-        evictUser(userId);
         return AddressDtos.AddressView.from(address);
     }
 
@@ -78,31 +73,10 @@ public class ShippingAddressService {
             repository.findAllByUserIdOrderByDefaultAddressDescUpdatedAtDesc(userId).stream()
                     .findFirst().ifPresent(item -> item.markDefault(true));
         }
-        evictUser(userId);
     }
 
-    @Transactional(readOnly = true)
     public ShippingAddressSnapshot resolveSnapshot(long userId, long addressId) {
-        AddressCacheKey cacheKey = new AddressCacheKey(userId, addressId);
-        ShippingAddressSnapshot cached = snapshotCache.get(cacheKey);
-        if (cached != null) {
-            return cached;
-        }
-
-        ReentrantLock lock = snapshotLocks.computeIfAbsent(cacheKey, ignored -> new ReentrantLock());
-        lock.lock();
-        try {
-            cached = snapshotCache.get(cacheKey);
-            if (cached != null) {
-                return cached;
-            }
-            ShippingAddressSnapshot loaded = ShippingAddressSnapshot.from(ownedAddress(userId, addressId));
-            snapshotCache.put(cacheKey, loaded);
-            return loaded;
-        } finally {
-            lock.unlock();
-            snapshotLocks.remove(cacheKey, lock);
-        }
+        return snapshotReader.read(userId, addressId);
     }
 
     private void clearDefault(long userId) {
@@ -115,11 +89,6 @@ public class ShippingAddressService {
                 .orElseThrow(() -> new BusinessException(ErrorCode.ADDRESS_NOT_FOUND));
     }
 
-    private void evictUser(long userId) {
-        snapshotCache.keySet().removeIf(key -> key.userId() == userId);
-        snapshotLocks.keySet().removeIf(key -> key.userId() == userId);
-    }
-
     private static AddressDtos.SaveAddressRequest withDefault(
             AddressDtos.SaveAddressRequest request,
             boolean value
@@ -127,8 +96,5 @@ public class ShippingAddressService {
         return new AddressDtos.SaveAddressRequest(
                 request.recipientName(), request.phone(), request.province(), request.city(),
                 request.district(), request.detailAddress(), request.postalCode(), value);
-    }
-
-    private record AddressCacheKey(long userId, long addressId) {
     }
 }

@@ -3,12 +3,15 @@ import type {
   Campaign,
   CampaignInput,
   Category,
+  CompensationTask,
   LoginData,
   Notification,
   Order,
   Product,
   ProductInput,
   ProductVariant,
+  ReconciliationLog,
+  ReconciliationReport,
   ReturnRequest,
   Review,
   ShippingAddress,
@@ -304,6 +307,34 @@ export function setCampaignStatus(id: number, status: string, token: string) {
 export function warmupCampaign(campaignId: number, token: string): Promise<void> {
   return request<void>(
     `/api/v1/admin/campaigns/${campaignId}/warmup`,
+    { method: "POST" },
+    token,
+  );
+}
+
+export function getStockReconciliation(token: string): Promise<ReconciliationReport> {
+  return request<ReconciliationReport>("/api/v1/admin/inventory/reconciliation", {}, token);
+}
+
+export function runStockReconciliation(token: string): Promise<ReconciliationReport> {
+  return request<ReconciliationReport>(
+    "/api/v1/admin/inventory/reconciliation",
+    { method: "POST" },
+    token,
+  );
+}
+
+export function listReconciliationLogs(token: string): Promise<ReconciliationLog[]> {
+  return request<ReconciliationLog[]>("/api/v1/admin/inventory/reconciliation/logs", {}, token);
+}
+
+export function listCompensationTasks(token: string): Promise<CompensationTask[]> {
+  return request<CompensationTask[]>("/api/v1/admin/inventory/compensations", {}, token);
+}
+
+export function retryCompensationTask(id: number, token: string): Promise<CompensationTask> {
+  return request<CompensationTask>(
+    `/api/v1/admin/inventory/compensations/${id}/retry`,
     { method: "POST" },
     token,
   );

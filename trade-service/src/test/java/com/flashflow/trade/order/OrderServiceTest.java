@@ -2,6 +2,7 @@ package com.flashflow.trade.order;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -18,6 +19,8 @@ import com.flashflow.trade.campaign.ReservationResult;
 import com.flashflow.trade.campaign.SeckillRedisRepository;
 import com.flashflow.trade.common.BusinessException;
 import com.flashflow.trade.common.ErrorCode;
+import com.flashflow.trade.inventory.StockCompensationService;
+import com.flashflow.trade.inventory.StockReservation;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -56,6 +59,9 @@ class OrderServiceTest {
     @Mock
     private ShippingAddressService shippingAddressService;
 
+    @Mock
+    private StockCompensationService stockCompensationService;
+
     private OrderService orderService;
     private OrderCampaignContext campaign;
 
@@ -76,6 +82,7 @@ class OrderServiceTest {
                 redisRepository,
                 writeCoordinator,
                 shippingAddressService,
+                stockCompensationService,
                 new SimpleMeterRegistry());
         when(campaignContextService.resolve(CAMPAIGN_ID)).thenReturn(campaign);
         when(shippingAddressService.resolveSnapshot(USER_ID, ADDRESS_ID)).thenReturn(SHIPPING_ADDRESS);
@@ -137,6 +144,36 @@ class OrderServiceTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("database unavailable");
         verify(redisRepository).compensate(CAMPAIGN_ID, USER_ID, REQUEST_KEY, ORDER_NO, 1);
+        verify(stockCompensationService, never()).recordFailedWrite(any(), any());
+    }
+
+    @Test
+    void defersCompensationToDurableTaskWhenRedisIsAlsoDown() {
+        when(orderNumberGenerator.next()).thenReturn(ORDER_NO);
+        when(redisRepository.reserve(
+                CAMPAIGN_ID,
+                USER_ID,
+                REQUEST_KEY,
+                ORDER_NO,
+                campaign.endsAt(),
+                1,
+                campaign.purchaseLimit()))
+                .thenReturn(ReservationResult.reserved(ORDER_NO));
+        OrderWriteCommand command = new OrderWriteCommand(
+                USER_ID, campaign, REQUEST_KEY, ORDER_NO, 1, PRODUCT_SNAPSHOT, SHIPPING_ADDRESS);
+        IllegalStateException writeFailure = new IllegalStateException("database unavailable");
+        when(writeCoordinator.persist(command)).thenThrow(writeFailure);
+        when(redisRepository.compensate(CAMPAIGN_ID, USER_ID, REQUEST_KEY, ORDER_NO, 1))
+                .thenThrow(new IllegalStateException("redis unavailable"));
+
+        assertThatThrownBy(() -> orderService.placeOrder(
+                USER_ID, CAMPAIGN_ID, REQUEST_KEY, 1, ADDRESS_ID))
+                .isSameAs(writeFailure);
+
+        verify(stockCompensationService).recordFailedWrite(
+                new StockReservation(CAMPAIGN_ID, USER_ID, REQUEST_KEY, ORDER_NO, 1),
+                writeFailure);
+        assertThat(writeFailure.getSuppressed()).hasSize(1);
     }
 
     @Test

@@ -34,4 +34,17 @@ public interface OutboxRepository extends JpaRepository<OutboxEntity, UUID> {
     );
 
     long countByStatus(OutboxStatus status);
+
+    // Native because JPQL has no DELETE ... LIMIT; small chunks keep each delete's lock footprint short.
+    @Modifying
+    @Query(value = """
+            delete from outbox_event
+             where status = 'PUBLISHED'
+               and created_at < :cutoff
+             limit :chunkSize
+            """, nativeQuery = true)
+    int deletePublishedBefore(
+            @Param("cutoff") Instant cutoff,
+            @Param("chunkSize") int chunkSize
+    );
 }

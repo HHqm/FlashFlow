@@ -8,42 +8,37 @@ import java.util.UUID;
 import com.flashflow.common.event.DomainEvent;
 import com.flashflow.common.event.EventTypes;
 import com.flashflow.trade.campaign.CampaignRepository;
-import com.flashflow.trade.campaign.SeckillRedisRepository;
 import com.flashflow.trade.common.BusinessException;
 import com.flashflow.trade.common.ErrorCode;
+import com.flashflow.trade.inventory.StockCompensationReason;
+import com.flashflow.trade.inventory.StockCompensationService;
 import com.flashflow.trade.order.OrderDtos;
 import com.flashflow.trade.order.OrderEntity;
 import com.flashflow.trade.order.OrderRepository;
 import com.flashflow.trade.outbox.OutboxService;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 @Service
 public class AfterSaleService {
 
-    private static final Logger log = LoggerFactory.getLogger(AfterSaleService.class);
-
     private final OrderRepository orderRepository;
     private final ReturnRequestRepository returnRepository;
     private final CampaignRepository campaignRepository;
-    private final SeckillRedisRepository redisRepository;
+    private final StockCompensationService stockCompensationService;
     private final OutboxService outboxService;
 
     public AfterSaleService(
             OrderRepository orderRepository,
             ReturnRequestRepository returnRepository,
             CampaignRepository campaignRepository,
-            SeckillRedisRepository redisRepository,
+            StockCompensationService stockCompensationService,
             OutboxService outboxService
     ) {
         this.orderRepository = orderRepository;
         this.returnRepository = returnRepository;
         this.campaignRepository = campaignRepository;
-        this.redisRepository = redisRepository;
+        this.stockCompensationService = stockCompensationService;
         this.outboxService = outboxService;
     }
 
@@ -64,7 +59,8 @@ public class AfterSaleService {
                         "cancelledAt", now.toString(),
                         "reason", "CUSTOMER_CANCELLED",
                         "detail", normalizedReason)));
-        compensateRedisAfterCommit(order);
+        stockCompensationService.scheduleAfterCommit(
+                order.stockReservation(), StockCompensationReason.CUSTOMER_CANCELLED);
         return OrderDtos.OrderView.from(order, false);
     }
 
@@ -134,7 +130,8 @@ public class AfterSaleService {
                             "userId", order.getUserId(),
                             "processedAt", now.toString(),
                             "adminNote", note)));
-            compensateRedisAfterCommit(order);
+            stockCompensationService.scheduleAfterCommit(
+                    order.stockReservation(), StockCompensationReason.REFUND_APPROVED);
         } else {
             returnRequest.reject(note, now);
             order.rejectRefund(now);
@@ -171,25 +168,6 @@ public class AfterSaleService {
                     ErrorCode.INTERNAL_ERROR,
                     "活动库存恢复失败，请稍后重试");
         }
-    }
-
-    private void compensateRedisAfterCommit(OrderEntity order) {
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-                try {
-                    redisRepository.compensate(
-                            order.getCampaignId(),
-                            order.getUserId(),
-                            order.getIdempotencyKey(),
-                            order.getOrderNo(),
-                            order.getQuantity());
-                } catch (RuntimeException exception) {
-                    log.error("After-sale Redis compensation failed, orderNo={}",
-                            order.getOrderNo(), exception);
-                }
-            }
-        });
     }
 
     private ReturnDtos.ReturnView toView(ReturnRequestEntity request, OrderEntity order) {
