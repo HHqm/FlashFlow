@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/HHqm/FlashFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/HHqm/FlashFlow/actions/workflows/ci.yml)
 
-FlashFlow 是一个面向 Java 后端求职作品集的生产化微服务电商项目：用户商城 + 运营后台 + 网关 + 交易服务 + 异步通知服务。它围绕“限量商品抢购”实现 Redis Lua 原子预占、MySQL 最终防超卖、单写队列微批量落库、事务 Outbox、Kafka 至少一次投递、Inbox 消费幂等、库存补偿任务与自动对账，并用真实中间件集成测试和 k6 压测给出可复现的数据。
+FlashFlow 是一个面向限量商品抢购场景的微服务电商项目：用户商城 + 运营后台 + 网关 + 交易服务 + 异步通知服务。它围绕“限量商品抢购”实现 Redis Lua 原子预占、MySQL 最终防超卖、单写队列微批量落库、事务 Outbox、Kafka 至少一次投递、Inbox 消费幂等、库存补偿任务与自动对账，并用真实中间件集成测试和 k6 压测给出可复现的数据。
 
 ## 结果速览
 
@@ -224,7 +224,7 @@ FlashFlow/
 ├── notification-service/   # Kafka Consumer、Inbox、DLT
 ├── frontend/               # Vue 3 用户商城与运营后台
 ├── docker/                 # MySQL 初始化、Prometheus 配置与告警规则
-├── docs/                   # 架构、接口、性能报告、面试与简历材料
+├── docs/                   # 架构、接口与性能报告
 ├── load-test/              # k6 场景、压测买家生成、一键压测与结果核对
 └── compose.yml             # 本地完整环境
 ```
@@ -233,8 +233,6 @@ FlashFlow/
 
 - [架构说明](docs/architecture.md)：一致性、库存自愈、扩展和生产化取舍；
 - [性能测试报告](docs/performance-test-2026-11-01.md)：多买家压测、瓶颈定位过程与优化前后对比（[早期单用户报告](docs/performance-test-2026-08-12.md)）；
-- [面试追问手册](docs/interview-guide.md)：组件选择、边界与故障处理；
-- [简历项目描述](docs/resume.md)：可直接使用、每条都有代码和测试佐证的描述；
 - [OpenAPI 契约](docs/openapi.yaml)：主要外部接口定义。
 
 所有性能数字都依赖机器、Docker 资源和参数，请在自己的环境运行 `load-test/run-suite.sh` 后再引用，并保留“本机 Docker 单实例”等限定条件。
